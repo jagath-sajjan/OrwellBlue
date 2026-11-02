@@ -94,16 +94,7 @@ pre {
 }
 
 button {
-  font: inherit;
-  color: inherit;
   cursor: pointer;
-}
-
-input,
-textarea,
-select {
-  font: inherit;
-  color: inherit;
 }
 
 /* Flat grey skeleton blink (stepped, no shimmer). */
@@ -136,6 +127,33 @@ select {
 
 .animate-rise-fade {
   animation: rise-fade 0.12s ease-out both;
+}
+
+/* Ledger row severity flash (opacity/background only). */
+@keyframes row-flash-yellow {
+  0% {
+    background-color: var(--soft-yellow);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes row-flash-red {
+  0% {
+    background-color: var(--soft-red);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+.row-flash-warn {
+  animation: row-flash-yellow 0.6s ease-out both;
+}
+
+.row-flash-critical {
+  animation: row-flash-red 0.6s ease-out both;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -51,6 +51,7 @@ interface DashboardContextValue {
   queuedAgentIds: string[];
   pending: PendingState;
   error: string;
+  loading: boolean;
   toggleMode: () => Promise<void>;
   spawnAgent: (agentId: string, profile: AgentProfile) => Promise<void>;
   killAgent: (agentId: string) => Promise<void>;
@@ -90,6 +91,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     verify: false,
   });
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
 
   const failures = useRef(0);
   const modeRef = useRef(mockMode);
@@ -170,6 +172,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
         scheduleReconnect();
       }
     }
+    setLoading(false);
   }, [scheduleReconnect]);
 
   useEffect(() => {
@@ -230,25 +233,26 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     async (agentId: string, profile: AgentProfile) => {
       setPending((current) => ({ ...current, spawn: true }));
       clearError();
+      // Optimistic queued agent so the card appears instantly, then reconciles.
+      setQueuedAgentIds((current) =>
+        current.includes(agentId) ? current : [...current, agentId],
+      );
+      setAgents((current) => {
+        if (current.some((agent) => agent.agent_id === agentId)) return current;
+        return [
+          {
+            agent_id: agentId,
+            status: "running",
+            last_heartbeat: 0,
+            violations: 0,
+            container_id: null,
+          },
+          ...current,
+        ];
+      });
       try {
-        setQueuedAgentIds((current) =>
-          current.includes(agentId) ? current : [...current, agentId],
-        );
         await api.spawnAgent(agentId, profile);
         setQueuedAgentIds((current) => current.filter((id) => id !== agentId));
-        setAgents((current) => {
-          if (current.some((agent) => agent.agent_id === agentId)) return current;
-          return [
-            {
-              agent_id: agentId,
-              status: "running",
-              last_heartbeat: 0,
-              violations: 0,
-              container_id: null,
-            },
-            ...current,
-          ];
-        });
         void refresh();
       } catch (reason) {
         setQueuedAgentIds((current) => current.filter((id) => id !== agentId));
@@ -342,6 +346,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       queuedAgentIds,
       pending,
       error,
+      loading,
       toggleMode,
       spawnAgent,
       killAgent,
@@ -363,6 +368,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       queuedAgentIds,
       pending,
       error,
+      loading,
       toggleMode,
       spawnAgent,
       killAgent,

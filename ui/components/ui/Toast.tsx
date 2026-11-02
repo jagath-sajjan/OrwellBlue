@@ -15,6 +15,7 @@ import { cn } from "./cn";
 export type ToastTone = "green" | "yellow" | "red";
 
 export interface ToastOptions {
+  key?: string;
   title: string;
   description?: string;
   tone?: ToastTone;
@@ -23,16 +24,27 @@ export interface ToastOptions {
   durationMs?: number;
 }
 
-interface ToastItem extends ToastOptions {
+interface ToastItem {
   id: string;
+  key: string;
+  title: string;
+  tone: ToastTone;
+  description?: string;
+  actionLabel?: string;
+  onAction?: () => void;
+  durationMs: number;
 }
 
 interface ToastContextValue {
   toast: (options: ToastOptions) => void;
   dismiss: (id: string) => void;
+  pause: (id: string) => void;
+  resume: (id: string) => void;
 }
 
 const ToastContext = createContext<ToastContextValue | null>(null);
+
+const MAX_VISIBLE = 3;
 
 const toneStyles: Record<ToastTone, string> = {
   green: "bg-soft-green",
@@ -44,37 +56,73 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const timers = useRef(new Map<string, number>());
 
-  const dismiss = useCallback((id: string) => {
-    setToasts((current) => current.filter((t) => t.id !== id));
+  const clearTimer = useCallback((id: string) => {
     const timer = timers.current.get(id);
     if (timer !== undefined) window.clearTimeout(timer);
     timers.current.delete(id);
   }, []);
 
-  const schedule = useCallback(
-    (item: ToastItem) => {
-      const timer = window.setTimeout(() => dismiss(item.id), item.durationMs ?? 8000);
-      timers.current.set(item.id, timer);
+  const dismiss = useCallback(
+    (id: string) => {
+      clearTimer(id);
+      setToasts((current) => current.filter((t) => t.id !== id));
     },
-    [dismiss],
+    [clearTimer],
+  );
+
+  const resume = useCallback(
+    (id: string) => {
+      const item = toasts.find((t) => t.id === id);
+      if (!item) return;
+      clearTimer(id);
+      const timer = window.setTimeout(() => dismiss(id), item.durationMs);
+      timers.current.set(id, timer);
+    },
+    [clearTimer, dismiss, toasts],
+  );
+
+  const pause = useCallback(
+    (id: string) => {
+      clearTimer(id);
+    },
+    [clearTimer],
   );
 
   const toast = useCallback(
     (options: ToastOptions) => {
-      const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      const item: ToastItem = { id, tone: "red", ...options };
-      setToasts((current) => [...current.slice(-2), item]);
-      schedule(item);
+      const key = options.key ?? `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+      const id = `${key}-${Date.now()}`;
+      const item: ToastItem = {
+        id,
+        key,
+        title: options.title,
+        tone: options.tone ?? "red",
+        description: options.description,
+        actionLabel: options.actionLabel,
+        onAction: options.onAction,
+        durationMs: options.durationMs ?? 8000,
+      };
+
+      setToasts((current) => {
+        // Dedupe by key: clear any previous toast for this agent and its timer.
+        const previous = current.find((t) => t.key === key);
+        if (previous) clearTimer(previous.id);
+        const next = [...current.filter((t) => t.key !== key), item];
+        return next;
+      });
+
+      const timer = window.setTimeout(() => dismiss(id), item.durationMs);
+      timers.current.set(id, timer);
     },
-    [schedule],
+    [clearTimer, dismiss],
   );
 
-  const value = useMemo(() => ({ toast, dismiss }), [toast, dismiss]);
+  const value = useMemo(() => ({ toast, dismiss, pause, resume }), [toast, dismiss, pause, resume]);
 
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <ToastViewport toasts={toasts} onDismiss={dismiss} onPause={dismiss} onResume={schedule} />
+      <ToastViewport toasts={toasts} onDismiss={dismiss} onPause={pause} onResume={resume} />
     </ToastContext.Provider>
   );
 }
@@ -85,30 +133,34 @@ export function useToast() {
   return context;
 }
 
-interface ToastViewportProps {
+function ToastViewport({
+  toasts,
+  onDismiss,
+  onPause,
+  onResume,
+}: {
   toasts: ToastItem[];
   onDismiss: (id: string) => void;
   onPause: (id: string) => void;
-  onResume: (item: ToastItem) => void;
-}
-
-function ToastViewport({ toasts, onDismiss, onPause, onResume }: ToastViewportProps) {
+  onResume: (id: string) => void;
+}) {
   if (!toasts.length) return null;
+
+  const visible = toasts.slice(-MAX_VISIBLE);
+  const hidden = toasts.length - visible.length;
+
   return (
     <div
       className="fixed right-4 top-4 z-[60] flex w-[min(440px,calc(100vw-2rem))] flex-col gap-2 sm:top-auto sm:bottom-4"
       aria-live="assertive"
       aria-atomic="false"
     >
-      {toasts.map((item) => (
+      {visible.map((item) => (
         <article
           key={item.id}
-          className={cn(
-            "rounded-none border-2 border-ink p-3 shadow-md",
-            toneStyles[item.tone ?? "red"],
-          )}
+          className={cn("rounded-none border-2 border-ink p-3 shadow-md", toneStyles[item.tone])}
           onMouseEnter={() => onPause(item.id)}
-          onMouseLeave={() => onResume(item)}
+          onMouseLeave={() => onResume(item.id)}
         >
           <div className="flex items-start gap-3">
             <div className="min-w-0 flex-1">
@@ -142,6 +194,11 @@ function ToastViewport({ toasts, onDismiss, onPause, onResume }: ToastViewportPr
           </div>
         </article>
       ))}
+      {hidden > 0 ? (
+        <div className="self-end border-2 border-ink bg-ink px-2.5 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-bg shadow-md">
+          +{hidden} more
+        </div>
+      ) : null}
     </div>
   );
 }

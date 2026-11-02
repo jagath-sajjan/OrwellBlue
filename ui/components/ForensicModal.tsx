@@ -1,102 +1,281 @@
 "use client";
 
-import { Clipboard, ClipboardCheck, FileSearch, LoaderCircle, X } from "lucide-react";
+import { Clipboard, ClipboardCheck, FileSearch, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { fetchForensics } from "../lib/api";
-import type { ForensicSnapshot } from "../lib/types";
+import { fetchForensics } from "@/lib/api";
+import { SeverityChip } from "@/components/StatusChip";
+import { Dialog } from "@/components/ui/Dialog";
+import { formatFullTime } from "@/lib/format";
 
-type ForensicTab = "processes" | "fs_diff" | "logs";
+type Tab = "processes" | "fs_diff" | "logs";
 
-interface ForensicModalProps {
-  agentId: string;
-  onClose: () => void;
+interface RawForensic {
+  agent_id: string;
+  killed_at: number;
+  reason: string;
+  processes: unknown;
+  fs_diff: unknown;
+  logs: string;
 }
 
-const tabs: Array<{ id: ForensicTab; label: string }> = [
+const TABS: Array<{ id: Tab; label: string }> = [
   { id: "processes", label: "Process Tree" },
   { id: "fs_diff", label: "Filesystem Diff" },
   { id: "logs", label: "Container Logs" },
 ];
 
-function timeLabel(timestamp: number) {
-  return new Date(timestamp * 1000).toLocaleTimeString("en-US", { hour12: false });
+function hasErrorEntry(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.some((item) => typeof item === "object" && item !== null && "error" in item)
+  );
 }
 
-export default function ForensicModal({ agentId, onClose }: ForensicModalProps) {
-  const [snapshot, setSnapshot] = useState<ForensicSnapshot | null>(null);
-  const [activeTab, setActiveTab] = useState<ForensicTab>("processes");
+function diffMeta(kind: unknown): { badge: string; label: string; tone: "yellow" | "green" | "red" } {
+  if (kind === 0 || kind === "0" || kind === "M" || kind === "C") {
+    return { badge: "M", label: "Modified", tone: "yellow" };
+  }
+  if (kind === 1 || kind === "1" || kind === "A") {
+    return { badge: "A", label: "Added", tone: "green" };
+  }
+  return { badge: "D", label: "Deleted", tone: "red" };
+}
+
+function ProcessTree({ processes }: { processes: unknown }) {
+  if (!Array.isArray(processes) || processes.length === 0) {
+    return <p className="py-8 text-center font-mono text-[13px] text-ink-2">No process records.</p>;
+  }
+  if (hasErrorEntry(processes)) {
+    return (
+      <div className="border-2 border-ink bg-soft-red p-4 font-mono text-[13px]">
+        Process capture unavailable: container was already stopped.
+      </div>
+    );
+  }
+
+  const rows = processes.map((entry, index) => {
+    if (Array.isArray(entry)) {
+      const user = String(entry[0] ?? "—");
+      const pid = String(entry[1] ?? "—");
+      const cmd = String(entry[entry.length - 1] ?? "—");
+      return { key: `${pid}-${index}`, pid, user, cmd };
+    }
+    if (typeof entry === "object" && entry !== null) {
+      const obj = entry as Record<string, unknown>;
+      return {
+        key: `${String(obj.pid ?? obj.PID ?? index)}-${index}`,
+        pid: String(obj.pid ?? obj.PID ?? "—"),
+        user: String(obj.user ?? obj.USER ?? "—"),
+        cmd: String(obj.cmd ?? obj.CMD ?? "—"),
+      };
+    }
+    return null;
+  });
+
+  return (
+    <div className="overflow-x-auto border-2 border-ink">
+      <table className="w-full border-collapse">
+        <thead>
+          <tr className="bg-surface-2 text-left font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-ink-2">
+            <th className="border-b-2 border-ink px-3 py-2">PID</th>
+            <th className="border-b-2 border-ink px-3 py-2">User</th>
+            <th className="border-b-2 border-ink px-3 py-2">Command</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((row) =>
+            row ? (
+              <tr key={row.key} className="border-b-2 border-ink last:border-b-0">
+                <td className="px-3 py-2 font-mono text-[12px] tabular-nums">{row.pid}</td>
+                <td className="px-3 py-2 font-mono text-[12px]">{row.user}</td>
+                <td className="px-3 py-2 font-mono text-[12px]">{row.cmd}</td>
+              </tr>
+            ) : null,
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function FsDiff({ fsDiff }: { fsDiff: unknown }) {
+  if (!Array.isArray(fsDiff) || fsDiff.length === 0) {
+    return <p className="py-8 text-center font-mono text-[13px] text-ink-2">No filesystem changes recorded.</p>;
+  }
+  if (hasErrorEntry(fsDiff)) {
+    return (
+      <div className="border-2 border-ink bg-soft-red p-4 font-mono text-[13px]">
+        Filesystem diff capture unavailable.
+      </div>
+    );
+  }
+
+  const toneBg = { yellow: "bg-soft-yellow", green: "bg-soft-green", red: "bg-soft-red" } as const;
+
+  return (
+    <ul className="divide-y-2 divide-ink border-2 border-ink">
+      {fsDiff.map((entry, index) => {
+        if (typeof entry !== "object" || entry === null) return null;
+        const obj = entry as Record<string, unknown>;
+        const path = String(obj.Path ?? obj.path ?? "—");
+        const meta = diffMeta(obj.Kind ?? obj.kind);
+        return (
+          <li key={`${path}-${index}`} className="flex items-center gap-3 px-3 py-2">
+            <span
+              className={`inline-flex size-6 shrink-0 items-center justify-center border-2 border-ink font-mono text-[11px] font-bold ${toneBg[meta.tone]}`}
+            >
+              {meta.badge}
+            </span>
+            <code className="min-w-0 flex-1 truncate font-mono text-[12px]">{path}</code>
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.08em] text-ink-2">
+              {meta.label}
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function LogView({ logs }: { logs: string }) {
+  const lines = logs.split("\n");
+  return (
+    <div className="border-2 border-ink bg-surface-2">
+      {lines.map((line, index) => {
+        let parsed: Record<string, unknown> | null = null;
+        try {
+          const value = JSON.parse(line);
+          if (value && typeof value === "object") parsed = value;
+        } catch {
+          parsed = null;
+        }
+        if (parsed && "type" in parsed) {
+          const severity = typeof parsed.severity === "number" ? parsed.severity : 0;
+          const type = String(parsed.type ?? "info");
+          return (
+            <div key={index} className="flex items-center gap-2 border-b border-ink px-3 py-1.5 font-mono text-[12px]">
+              <SeverityChip severity={severity} />
+              <span className="font-bold uppercase tracking-[0.04em]">{type}</span>
+              <span className="truncate text-ink-2">{JSON.stringify(parsed.detail ?? {})}</span>
+            </div>
+          );
+        }
+        return (
+          <div key={index} className="border-b border-ink px-3 py-1.5 font-mono text-[12px] last:border-b-0">
+            {line || " "}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+export function ForensicModal({ agentId, onClose }: { agentId: string; onClose: () => void }) {
+  const [data, setData] = useState<RawForensic | null>(null);
+  const [tab, setTab] = useState<Tab>("processes");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     let active = true;
-    fetchForensics(agentId).then((value) => {
-      if (active) setSnapshot(value);
-    }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : "Forensic snapshot unavailable.");
-    }).finally(() => {
-      if (active) setLoading(false);
-    });
-    return () => { active = false; };
+    fetchForensics(agentId)
+      .then((value) => {
+        if (active) setData(value as unknown as RawForensic);
+      })
+      .catch((reason: unknown) => {
+        if (active) setError(reason instanceof Error ? reason.message : "Forensic snapshot unavailable.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
   }, [agentId]);
 
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   async function copyLogs() {
-    if (!snapshot) return;
+    if (!data) return;
     try {
-      await navigator.clipboard.writeText(snapshot.logs);
+      await navigator.clipboard.writeText(data.logs);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
-    } catch (reason) {
-      setError(reason instanceof Error ? `Unable to copy logs: ${reason.message}` : "Unable to copy logs.");
+    } catch {
+      setError("Unable to copy logs.");
     }
   }
 
-  const logLines = snapshot?.logs.split("\n") ?? [];
+  const reason = data?.reason ?? "—";
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="forensic-modal" role="dialog" aria-modal="true" aria-labelledby="forensic-title">
-        <div className="modal-header">
-          <div><span className="section-index">SEALED EVIDENCE{snapshot ? ` / ${timeLabel(snapshot.killed_at)}` : ""}</span><h2 id="forensic-title"><FileSearch size={19} /> Forensic Snapshot</h2></div>
-          <button className="icon-button" type="button" onClick={onClose} aria-label="Close forensics"><X size={18} /></button>
+    <Dialog
+      open
+      onOpenChange={(open) => !open && onClose()}
+      title="Forensic Snapshot"
+      eyebrow={`Sealed evidence / ${data ? formatFullTime(data.killed_at) : "—"}`}
+      description={`Agent ${agentId}`}
+      className="max-md:left-0 max-md:top-0 max-md:h-[100dvh] max-md:max-h-[100dvh] max-md:w-full max-md:translate-x-0 max-md:translate-y-0"
+    >
+      <div className="mb-4 flex items-center gap-2">
+        <FileSearch size={16} strokeWidth={2} />
+        <span className="font-mono text-[11px] font-bold uppercase tracking-[0.08em] text-ink-2">
+          Termination reason
+        </span>
+        <span className="inline-flex h-7 items-center rounded-none border-2 border-ink bg-soft-red px-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em]">
+          {reason}
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center gap-2 py-8 font-mono text-[13px] text-ink-2">
+          <LoaderCircle className="animate-spin" size={18} strokeWidth={2} />
+          Retrieving frozen container snapshot
         </div>
-        <div className="forensic-summary"><span>AGENT</span><strong>{agentId}</strong>{snapshot && <><span>TERMINATION REASON</span><strong className="text-red">{snapshot.reason}</strong></>}</div>
-        <div className="forensic-tabs" role="tablist" aria-label="Forensic evidence">
-          {tabs.map((tab) => <button key={tab.id} id={`forensic-tab-${tab.id}`} className={activeTab === tab.id ? "is-active" : ""} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`forensic-panel-${tab.id}`} onClick={() => setActiveTab(tab.id)}>{tab.label}</button>)}
+      ) : error ? (
+        <div className="border-2 border-ink bg-soft-red p-4 font-mono text-[13px]" role="alert">
+          {error}
         </div>
-        <div className="forensic-panel" id={`forensic-panel-${activeTab}`} role="tabpanel" aria-labelledby={`forensic-tab-${activeTab}`}>
-          {loading && <div className="component-state"><LoaderCircle className="spin" size={18} />RETRIEVING FROZEN CONTAINER SNAPSHOT</div>}
-          {error && <div className="component-error" role="alert">{error}</div>}
-          {!loading && snapshot && activeTab === "processes" && <>
-            <div className="forensic-section"><h3>PROCESS TREE / SIGSTOP CAPTURE <small>{snapshot.processes.length} RECORDS</small></h3>
-              <div className="forensic-table"><div className="forensic-table-head"><span>PID</span><span>USER</span><span>EXACT COMMAND AT FREEZE</span></div>
-                {snapshot.processes.map((process) => <div className="forensic-table-row" key={`${process.pid}-${process.cmd}`}><span>{process.pid}</span><span>{process.user}</span><code title={process.cmd}>{process.cmd}</code></div>)}
+      ) : data ? (
+        <>
+          <div role="tablist" aria-label="Forensic evidence" className="flex gap-2 border-b-2 border-ink">
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                id={`forensic-tab-${item.id}`}
+                role="tab"
+                aria-selected={tab === item.id}
+                aria-controls={`forensic-panel-${item.id}`}
+                onClick={() => setTab(item.id)}
+                className={`px-3 py-2 font-mono text-[11px] font-bold uppercase tracking-[0.08em] ${
+                  tab === item.id ? "border-2 border-ink border-b-0 bg-soft-yellow" : "text-ink-2"
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+
+          <div id={`forensic-panel-${tab}`} role="tabpanel" aria-labelledby={`forensic-tab-${tab}`} className="mt-4">
+            {tab === "processes" ? <ProcessTree processes={data.processes} /> : null}
+            {tab === "fs_diff" ? <FsDiff fsDiff={data.fs_diff} /> : null}
+            {tab === "logs" ? (
+              <div>
+                <div className="mb-2 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => void copyLogs()}
+                    className="inline-flex items-center gap-1 rounded-none border-2 border-ink bg-bg px-2 py-1 font-mono text-[11px] font-bold uppercase tracking-[0.08em] shadow-sm"
+                  >
+                    {copied ? <ClipboardCheck size={14} strokeWidth={2} /> : <Clipboard size={14} strokeWidth={2} />}
+                    {copied ? "Copied" : "Copy logs"}
+                  </button>
+                </div>
+                <LogView logs={data.logs} />
               </div>
-            </div>
-          </>}
-          {!loading && snapshot && activeTab === "fs_diff" && <div className="forensic-section">
-            <h3>FILESYSTEM DIFF <small>{snapshot.fs_diff.length} CHANGES</small></h3>
-            {snapshot.fs_diff.map((change) => <div className="fs-row" key={change.path}><span className={`diff-kind kind-${change.kind}`} aria-label={change.kind === "C" ? "Modified" : change.kind === "A" ? "Added" : "Deleted"}>{change.kind}</span><code>{change.path}</code><span className={`diff-label kind-label-${change.kind}`}>{change.kind === "C" ? "MODIFIED" : change.kind === "A" ? "ADDED" : "DELETED"}</span></div>)}
-            {!snapshot.fs_diff.length && <div className="empty-evidence">NO FILESYSTEM CHANGES RECORDED</div>}
-          </div>}
-          {!loading && snapshot && activeTab === "logs" && <div className="forensic-section">
-            <h3>CONTAINER STDOUT / STDERR TAIL <small>{logLines.length} LINES</small></h3>
-            <div className="log-terminal">
-              <button className="copy-logs-button" type="button" onClick={() => void copyLogs()} aria-label="Copy container logs">{copied ? <ClipboardCheck size={14} /> : <Clipboard size={14} />}{copied ? "COPIED" : "COPY LOGS"}</button>
-              <pre>{logLines.map((line, index) => <span className={/\b(violation|trigger|breach)\b/i.test(line) ? "log-violation" : ""} key={`${index}-${line}`}>{line || " "}{index < logLines.length - 1 ? "\n" : ""}</span>)}</pre>
-            </div>
-          </div>}
-        </div>
-      </section>
-    </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+    </Dialog>
   );
 }
