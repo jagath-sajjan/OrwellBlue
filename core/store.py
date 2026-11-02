@@ -352,40 +352,63 @@ class _Store:
             return None
 
 
-_store = _Store()
+_store_instance: _Store | None = None
+_store_lock: threading.Lock = threading.Lock()
+
+
+def get_store() -> _Store:
+    global _store_instance
+    if _store_instance is None:
+        with _store_lock:
+            if _store_instance is None:
+                _store_instance = _Store()
+    return _store_instance
+
+
+def reset_store() -> None:
+    """Close and discard the current store singleton (intended for tests)."""
+    global _store_instance
+    with _store_lock:
+        if _store_instance is not None:
+            try:
+                _store_instance._conn.close()
+            except Exception:  # noqa: BLE001,S110
+                pass
+            _store_instance = None
+        _Store._instance = None
 
 
 def append_event(event: Event) -> Event:
-    return _store.append_event(event)
+    return get_store().append_event(event)
 
 
 def read_events(since_id: int = 0) -> list[Event]:
-    return _store.read_events(since_id)
+    return get_store().read_events(since_id)
 
 
 def verify_chain() -> tuple[bool, int, int | None]:
-    return _store.verify_chain()
+    return get_store().verify_chain()
 
 
 def request_kill(agent_id: str, reason: str = "manual") -> None:
-    _store.request_kill(agent_id, reason)
+    get_store().request_kill(agent_id, reason)
 
 
 def pop_kill_requests() -> list[dict]:
-    return _store.pop_kill_requests()
+    return get_store().pop_kill_requests()
 
 
 def request_spawn(agent_id: str, profile: str) -> None:
-    _store.request_spawn(agent_id, profile)
+    get_store().request_spawn(agent_id, profile)
 
 
 def pop_spawn_requests() -> list[dict]:
-    return _store.pop_spawn_requests()
+    return get_store().pop_spawn_requests()
 
 
 def get_agents_summary() -> list[dict]:
-    return _store.get_agents_summary()
+    return get_store().get_agents_summary()
 
 
 def get_forensic_snapshot(agent_id: str) -> dict | None:
-    return _store.get_forensic_snapshot(agent_id)
+    return get_store().get_forensic_snapshot(agent_id)
