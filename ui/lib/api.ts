@@ -26,6 +26,48 @@ const snapshots = new Map<string, ForensicSnapshot>();
 const agentTicks = new Map<string, number>();
 const pendingKillTimers = new Set<number>();
 
+// Web Crypto is only available in secure contexts (HTTPS or localhost).
+// Over plain HTTP on a LAN IP (e.g. http://10.2.3.218:3000) crypto.subtle and
+// crypto.randomUUID are undefined, so the mock simulator needs deterministic
+// fallbacks that keep mock mode working without touching the live backend.
+function randomId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (char) => {
+    const random = Math.floor(Math.random() * 16);
+    const value = char === "x" ? random : (random & 0x3) | 0x8;
+    return value.toString(16);
+  });
+}
+
+function fallbackHash(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  let h3 = 0x9e3779b9;
+  let h4 = 0x85ebca6b;
+  for (let i = 0; i < input.length; i += 1) {
+    const code = input.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 16777619) >>> 0;
+    h2 = Math.imul(h2 ^ code, 2246822519) >>> 0;
+    h3 = Math.imul(h3 ^ code, 3266489917) >>> 0;
+    h4 = Math.imul(h4 ^ code, 668265263) >>> 0;
+  }
+  const hex = (value: number) => value.toString(16).padStart(8, "0");
+  return (
+    hex(h1) + hex(h2) + hex(h3) + hex(h4) +
+    hex(h1 ^ h2) + hex(h3 ^ h4) + hex(h2 ^ h3) + hex(h1 ^ h4)
+  );
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  if (typeof crypto !== "undefined" && crypto.subtle) {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+    return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
+  return fallbackHash(input);
+}
+
 export function getUseMockMode() {
   if (!modePreferenceLoaded && typeof window !== "undefined") {
     useMockMode = window.localStorage.getItem("orwellblue_mode") !== "LIVE";
@@ -89,7 +131,7 @@ export function spawnAgent(agent_id: string, profile: AgentProfile): Promise<Age
     },
     async () => {
       if (agents.some((agent) => agent.agent_id === agent_id)) throw new Error("An agent with that ID already exists.");
-      const agent: AgentSummary = { agent_id, status: "running", last_heartbeat: Math.floor(Date.now() / 1000), violations: 0, container_id: `obx-${crypto.randomUUID().slice(0, 6)}` };
+      const agent: AgentSummary = { agent_id, status: "running", last_heartbeat: Math.floor(Date.now() / 1000), violations: 0, container_id: `obx-${randomId().slice(0, 6)}` };
       profiles.set(agent_id, profile);
       agentTicks.set(agent_id, 0);
       agents.unshift(agent);
@@ -135,7 +177,10 @@ export async function simulateMockTamper(): Promise<SandboxEvent> {
 export function triggerWrapperTamper(): Promise<SandboxEvent | null> {
   return withFallback(
     async () => {
-      await request<unknown>("/demo/tamper-wrapper", { method: "POST" });
+      await request<unknown>("/demo/tamper-wrapper", {
+        method: "POST",
+        body: JSON.stringify({ mode: "file" }),
+      });
       return null;
     },
     async () => {
@@ -304,8 +349,7 @@ async function emit(agent_id: string, type: EventType, severity: SandboxEvent["s
   const ts = Math.floor(Date.now() / 1000);
   const prev_hash = previousHash;
   const payload = JSON.stringify({ id, agent_id, type, severity, detail, ts, prev_hash });
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
-  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const hash = await sha256Hex(payload);
   if (generation !== simulationGeneration) return { id, agent_id, type, severity, detail, ts, prev_hash, hash };
   previousHash = hash;
   const event = { id, agent_id, type, severity, detail, ts, prev_hash, hash } satisfies SandboxEvent;
