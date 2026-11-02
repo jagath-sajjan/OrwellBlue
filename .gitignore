@@ -4,5 +4,10 @@ __pycache__/
 .env
 data/*.db
 data/*.db-*
+data/forensics/*.json
+data/tripwire_mount/
+data/.wrapper_compromised
+data/SELF_DESTRUCT.lock
+.docker/
 node_modules/
 .next/
