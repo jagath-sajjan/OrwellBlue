@@ -1,19 +1,19 @@
 "use client";
 
 import {
-  Activity, AlertOctagon, ArrowDownToLine, Check, ChevronDown, CircleHelp,
-  Clock3, Crosshair, FileSearch, Fingerprint, HeartPulse, LoaderCircle, Radio,
+  Activity, AlertOctagon, ArrowDownToLine, ChevronDown, CircleHelp,
+  Clock3, Crosshair, FileSearch, Fingerprint, HeartPulse, Radio,
   RefreshCw, Shield, ShieldAlert, Skull, Terminal, X, Zap,
 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import {
-  fetchAgents, fetchForensics, fetchHealth, getUseMockMode, killAgent,
+  fetchAgents, fetchHealth, getUseMockMode, killAgent, resetMockSimulation,
   setUseMockMode, spawnAgent, subscribeEvents, verifyHashChain,
 } from "../lib/api";
-import type {
-  AgentProfile, AgentSummary, ChainVerification, EventType, ForensicSnapshot,
-  HealthStatus, SandboxEvent,
-} from "../lib/types";
+import ChainLedgerDrawer from "../components/ChainLedgerDrawer";
+import ForensicModal from "../components/ForensicModal";
+import SelfDestructOverlay from "../components/SelfDestructOverlay";
+import type { AgentProfile, AgentSummary, ChainVerification, EventType, HealthStatus, SandboxEvent } from "../lib/types";
 
 const profiles: AgentProfile[] = ["benign", "ssrf", "egress", "privesc", "tripwire", "shared_write", "silent"];
 const eventTypes: EventType[] = ["info", "heartbeat", "egress_attempt", "ssrf_attempt", "privesc_attempt", "shared_write", "comms_attempt", "tripwire", "heartbeat_lost", "kill", "self_destruct"];
@@ -37,11 +37,18 @@ export default function Home() {
   const [profile, setProfile] = useState<AgentProfile>("benign");
   const [severityFilter, setSeverityFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
-  const [forensic, setForensic] = useState<ForensicSnapshot | null>(null);
+  const [forensicAgentId, setForensicAgentId] = useState<string | null>(null);
+  const [ledgerOpen, setLedgerOpen] = useState(false);
   const [breach, setBreach] = useState<SandboxEvent | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [breachReason, setBreachReason] = useState("");
   const [error, setError] = useState("");
   const [clock, setClock] = useState("--:--:--");
+
+  function recordHealthBreach(value: HealthStatus) {
+    if (!value.wrapper_intact || !value.chain_valid) {
+      setBreachReason(!value.wrapper_intact ? "Wrapper integrity check failed." : "Hash-chain integrity verification failed.");
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -49,6 +56,7 @@ export default function Home() {
       const [healthData, agentData, chainData] = await Promise.all([fetchHealth(), fetchAgents(), verifyHashChain()]);
       if (!active) return;
       setHealth(healthData);
+      recordHealthBreach(healthData);
       setAgents(agentData);
       setChain(chainData);
       setMockMode(getUseMockMode());
@@ -56,7 +64,10 @@ export default function Home() {
     void initialize();
     const unsubscribe = subscribeEvents((event) => {
       setEvents((current) => [event, ...current].slice(0, 120));
-      if (event.type === "self_destruct") setBreach(event);
+      if (event.type === "self_destruct") {
+        setBreach(event);
+        setBreachReason(String(event.detail.reason ?? "Wrapper breach detected. Hardcoded self-destruct executed."));
+      }
       setAgents((current) => current.map((agent) => {
         if (agent.agent_id !== event.agent_id) return agent;
         if (event.type === "heartbeat") return { ...agent, last_heartbeat: event.ts };
@@ -70,7 +81,7 @@ export default function Home() {
     const clockTimer = window.setInterval(() => setClock(new Date().toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })), 1000);
     const refreshTimer = window.setInterval(() => {
       setMockMode(getUseMockMode());
-      void fetchHealth().then(setHealth);
+      void fetchHealth().then((value) => { setHealth(value); recordHealthBreach(value); }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to fetch health status."));
       void fetchAgents().then(setAgents);
     }, 5000);
     return () => {
@@ -107,17 +118,6 @@ export default function Home() {
     }
   }
 
-  async function inspect(agent: AgentSummary) {
-    try { setForensic(await fetchForensics(agent.agent_id)); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "Forensic snapshot unavailable."); }
-  }
-
-  async function runVerification() {
-    setBusy(true);
-    try { setChain(await verifyHashChain()); }
-    finally { setBusy(false); setMockMode(getUseMockMode()); }
-  }
-
   async function toggleMode() {
     const nextMode = !mockMode;
     setUseMockMode(nextMode);
@@ -125,8 +125,22 @@ export default function Home() {
     if (!nextMode) {
       const result = await fetchHealth();
       setHealth(result);
+      recordHealthBreach(result);
       setMockMode(getUseMockMode());
     }
+  }
+
+  async function resetSimulation() {
+    resetMockSimulation();
+    setEvents([]);
+    setBreach(null);
+    setBreachReason("");
+    setError("");
+    const [healthData, agentData, chainData] = await Promise.all([fetchHealth(), fetchAgents(), verifyHashChain()]);
+    setHealth(healthData);
+    setAgents(agentData);
+    setChain(chainData);
+    setMockMode(getUseMockMode());
   }
 
   const visibleEvents = events.filter((event) => (severityFilter === "all" || event.severity === Number(severityFilter)) && (typeFilter === "all" || event.type === typeFilter));
@@ -143,17 +157,19 @@ export default function Home() {
         </div>
       </header>
 
-      <section className={`containment-banner ${health?.wrapper_intact === false ? "is-compromised" : ""}`}>
+      <section className={`containment-banner ${health && (!health.wrapper_intact || !health.chain_valid) ? "is-compromised" : ""}`}>
         <div className="containment-icon"><Shield size={20} /></div>
-        <div className="containment-copy"><span className="eyebrow">WRAPPER CONTAINMENT STATUS</span><strong>{health?.wrapper_intact === false ? "WRAPPER COMPROMISED — SELF DESTRUCT EXECUTED" : "CONTAINMENT INTACT"}</strong></div>
+        <div className="containment-copy"><span className="eyebrow">WRAPPER CONTAINMENT STATUS</span><strong>{health && (!health.wrapper_intact || !health.chain_valid) ? "WRAPPER COMPROMISED — SELF DESTRUCT EXECUTED" : "CONTAINMENT INTACT"}</strong></div>
         <span className="containment-side"><i />WATCHDOG ARMED</span>
       </section>
 
       <div className="overview-strip">
         <div className="overview-cell"><span>FLEET STATUS</span><strong><i className="tiny-dot" />{activeCount}<small>/ {agents.length} ACTIVE</small></strong></div>
         <div className="overview-cell"><span>EVENT STREAM</span><strong><Activity size={15} />{events.length.toString().padStart(3, "0")}<small>RECORDED</small></strong></div>
-        <div className="overview-cell ledger-cell"><span>HASH-CHAIN LEDGER</span><strong className={chain?.valid === false ? "text-red" : "text-green"}><Fingerprint size={16} />{chain?.valid === false ? "CHAIN BROKEN" : `CHAIN VALID (${chain?.total_events ?? 0} BLOCKS)`}</strong></div>
-        <button className="verify-button" onClick={() => void runVerification()} disabled={busy} type="button">{busy ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}<span>VERIFY CHAIN</span></button>
+        <button className="overview-cell ledger-cell ledger-trigger" type="button" onClick={() => setLedgerOpen(true)} aria-label="Open hash-chain audit ledger">
+          <span>HASH-CHAIN LEDGER</span><strong className={chain?.valid === false ? "text-red" : "text-green"}><Fingerprint size={16} />{chain?.valid === false ? "CHAIN BROKEN" : `CHAIN VALID (${chain?.total_events ?? events.length} BLOCKS)`}</strong>
+        </button>
+        <button className="verify-button" onClick={() => setLedgerOpen(true)} type="button"><RefreshCw size={14} /><span>OPEN LEDGER</span></button>
       </div>
 
       {error && <div className="action-error" role="alert"><AlertOctagon size={15} />{error}<button onClick={() => setError("")} aria-label="Dismiss error"><X size={14} /></button></div>}
@@ -164,9 +180,9 @@ export default function Home() {
           <form className="spawner" onSubmit={(event) => void submitSpawn(event)}>
             <div className="spawner-title"><Zap size={15} /><span>DEPLOY SANDBOX AGENT</span><small>ISOLATED CONTAINER</small></div>
             <div className="spawner-controls">
-              <label><span>AGENT ID</span><input value={agentId} onChange={(event) => setAgentId(event.target.value)} placeholder="e.g. agent-delta" maxLength={48} /></label>
-              <label><span>SCENARIO PROFILE</span><span className="select-wrap"><select value={profile} onChange={(event) => setProfile(event.target.value as AgentProfile)}>{profiles.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}</select><ChevronDown size={14} /></span></label>
-              <button className="deploy-button" type="submit"><Zap size={14} />SPAWN AGENT</button>
+              <label><span>AGENT ID</span><input disabled={Boolean(breach || breachReason)} value={agentId} onChange={(event) => setAgentId(event.target.value)} placeholder="e.g. agent-delta" maxLength={48} /></label>
+              <label><span>SCENARIO PROFILE</span><span className="select-wrap"><select disabled={Boolean(breach || breachReason)} value={profile} onChange={(event) => setProfile(event.target.value as AgentProfile)}>{profiles.map((item) => <option key={item} value={item}>{item.toUpperCase()}</option>)}</select><ChevronDown size={14} /></span></label>
+              <button className="deploy-button" type="submit" disabled={Boolean(breach || breachReason)}><Zap size={14} />SPAWN AGENT</button>
             </div>
           </form>
           <div className="fleet-label"><span>AGENT INVENTORY <b>{agents.length.toString().padStart(2, "0")}</b></span><span>HEARTBEAT / 2.2S</span></div>
@@ -175,7 +191,7 @@ export default function Home() {
               <div className="agent-card-top"><div className="agent-icon"><Terminal size={17} /></div><span className={`agent-status status-${agent.status}`}><i />{statusName(agent.status)}</span><button className="icon-button help-button" type="button" title="Agent isolation details" aria-label="Agent isolation details"><CircleHelp size={15} /></button></div>
               <h2>{agent.agent_id}</h2><div className="container-id">CONTAINER <span>{agent.container_id ?? "ID UNAVAILABLE"}</span></div>
               <div className="agent-metrics"><div><span><HeartPulse size={13} />HEARTBEAT</span><strong>{agent.status === "running" ? "NOMINAL" : "STOPPED"}</strong></div><div><span><ShieldAlert size={13} />VIOLATIONS</span><strong className={agent.violations ? "text-amber" : ""}>{agent.violations.toString().padStart(2, "0")}</strong></div></div>
-              <div className="agent-card-footer"><span className="last-seen">LAST SEEN {agent.last_heartbeat ? timeLabel(agent.last_heartbeat) : "--:--:--"}</span>{agent.status === "running" ? <button className="kill-button" type="button" onClick={() => void terminate(agent)}><Skull size={13} />EMERGENCY KILL</button> : <button className="inspect-button" type="button" onClick={() => void inspect(agent)}><FileSearch size={13} />INSPECT FORENSICS</button>}</div>
+              <div className="agent-card-footer"><span className="last-seen">LAST SEEN {agent.last_heartbeat ? timeLabel(agent.last_heartbeat) : "--:--:--"}</span>{agent.status === "running" ? <button className="kill-button" type="button" disabled={Boolean(breach || breachReason)} onClick={() => void terminate(agent)}><Skull size={13} />EMERGENCY KILL</button> : agent.status === "killed" ? <button className="inspect-button" type="button" onClick={() => setForensicAgentId(agent.agent_id)}><FileSearch size={13} />INSPECT FORENSICS</button> : <span className="agent-terminal-state">{statusName(agent.status)}</span>}</div>
             </article>)}
             {!agents.length && <div className="empty-fleet">NO AGENTS DEPLOYED <span>Initialize a sandbox above.</span></div>}
           </div>
@@ -202,17 +218,12 @@ export default function Home() {
 
       <footer className="system-footer"><span>ORWELLBLUE <b>ZERO-TRUST CONTAINMENT SYSTEM</b></span><span>WATCHDOG <i className="tiny-dot" /> ARMED</span><span>BUILD 0.9.4 / {health?.project ?? "INITIALIZING"}</span></footer>
 
-      {forensic && <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setForensic(null); }}>
-        <section className="forensic-modal" role="dialog" aria-modal="true" aria-labelledby="forensic-title">
-          <div className="modal-header"><div><span className="section-index">SEALED EVIDENCE / {timeLabel(forensic.killed_at)}</span><h2 id="forensic-title">Forensic Snapshot</h2></div><button className="icon-button" type="button" onClick={() => setForensic(null)} aria-label="Close forensics"><X size={18} /></button></div>
-          <div className="forensic-summary"><span>AGENT</span><strong>{forensic.agent_id}</strong><span>TERMINATION REASON</span><strong className="text-red">{forensic.reason}</strong></div>
-          <div className="forensic-section"><h3>PROCESS TABLE <small>{forensic.processes.length} RECORDS</small></h3><div className="forensic-table"><div className="forensic-table-head"><span>PID</span><span>USER</span><span>COMMAND</span></div>{forensic.processes.map((process) => <div className="forensic-table-row" key={`${process.pid}-${process.cmd}`}><span>{process.pid}</span><span>{process.user}</span><code>{process.cmd}</code></div>)}</div></div>
-          <div className="forensic-section"><h3>FILESYSTEM DIFF <small>{forensic.fs_diff.length} CHANGES</small></h3>{forensic.fs_diff.map((change) => <div className="fs-row" key={change.path}><span className={`diff-kind kind-${change.kind}`}>{change.kind}</span><code>{change.path}</code></div>)}</div>
-          <div className="forensic-section"><h3>WATCHDOG LOGS</h3><pre>{forensic.logs}</pre></div>
-        </section>
-      </div>}
-
-      {breach && <div className="lockdown-overlay" role="alertdialog" aria-modal="true" aria-labelledby="lockdown-title"><div className="lockdown-noise" /><div className="lockdown-content"><div className="lockdown-symbol"><AlertOctagon size={42} /></div><span className="lockdown-kicker">WATCHDOG / CONTAINMENT FAILURE</span><h2 id="lockdown-title">SELF-DESTRUCT<br />EXECUTED</h2><p>{String(breach.detail.reason ?? "Terminal breach detected. Sandbox destroyed.")}</p><div className="lockdown-meta"><span>AGENT: {breach.agent_id}</span><span>EVENT #{breach.id.toString().padStart(4, "0")}</span><span>HASH: {breach.hash.slice(0, 16)}</span></div><button type="button" onClick={() => setBreach(null)}><Check size={15} />ACKNOWLEDGE LOCKDOWN</button></div></div>}
+      {forensicAgentId && <ForensicModal key={forensicAgentId} agentId={forensicAgentId} onClose={() => setForensicAgentId(null)} />}
+      {ledgerOpen && <ChainLedgerDrawer events={events} initialVerification={chain} mockMode={mockMode} onClose={() => setLedgerOpen(false)} onError={setError} onVerification={setChain} onTamper={(event) => {
+        setBreach(event);
+        setBreachReason(String(event.detail.reason ?? "SQLite audit log tampering detected. Hardcoded self-destruct executed."));
+      }} />}
+      <SelfDestructOverlay active={Boolean(breach || breachReason)} reason={breachReason} mockMode={mockMode} onReset={() => void resetSimulation()} />
     </main>
   );
 }
