@@ -58,12 +58,22 @@ export default function Home() {
     const storedMode = getUseMockMode();
     setUseMockMode(storedMode);
     const initialize = async () => {
-      const [healthData, agentData, chainData] = await Promise.all([fetchHealth(), fetchAgents(), verifyHashChain()]);
-      if (!active) return;
-      setHealth(healthData);
-      recordHealthBreach(healthData);
-      setAgents(agentData);
-      setChain(chainData);
+      try {
+        const [healthData, agentData, chainData] = await Promise.all([
+          fetchHealth(),
+          fetchAgents(),
+          verifyHashChain(),
+        ]);
+        if (!active) return;
+        setHealth(healthData);
+        recordHealthBreach(healthData);
+        setAgents(agentData);
+        setChain(chainData);
+        setError("");
+      } catch (reason) {
+        if (!active) return;
+        setError(reason instanceof Error ? reason.message : "Unable to connect to live backend.");
+      }
       setMockMode(getUseMockMode());
     };
     void initialize();
@@ -158,10 +168,22 @@ export default function Home() {
     setUseMockMode(nextMode);
     setMockMode(nextMode);
     if (!nextMode) {
-      const result = await fetchHealth();
-      setHealth(result);
-      recordHealthBreach(result);
-      setMockMode(getUseMockMode());
+      try {
+        const [result, agentData, chainData] = await Promise.all([
+          fetchHealth(),
+          fetchAgents(),
+          verifyHashChain(),
+        ]);
+        setHealth(result);
+        recordHealthBreach(result);
+        setAgents(agentData);
+        setChain(chainData);
+        setError("");
+      } catch (reason) {
+        setUseMockMode(true);
+        setMockMode(true);
+        setError(reason instanceof Error ? reason.message : "Unable to connect to live backend at :8000.");
+      }
     }
   }
 

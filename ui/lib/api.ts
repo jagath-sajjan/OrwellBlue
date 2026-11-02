@@ -64,7 +64,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 async function withFallback<T>(live: () => Promise<T>, mock: () => T | Promise<T>): Promise<T> {
   if (!useMockMode) {
-    try { return await live(); } catch { setUseMockMode(true); }
+    return await live();
   }
   return mock();
 }
