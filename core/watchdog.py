@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
-from collections.abc import Iterable
 
 import docker
 import typer
 from rich.console import Console
+from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -25,6 +26,7 @@ from core.store import (
     pop_spawn_requests,
     verify_chain,
 )
+from models.engine import get_engine, is_downloaded
 
 console = Console()
 app = typer.Typer(help="OrwellBlue enforcement watchdog")
@@ -58,6 +60,16 @@ class Watchdog:
         timestamp = time.strftime("%H:%M:%S")
         self.recent_actions.append(f"[{timestamp}] {message}")
         self.recent_actions = self.recent_actions[-20:]
+
+    def _warmup_models(self) -> None:
+        for model_key in ("qwen-1.5b", "qwen-math-1.5b"):
+            if not is_downloaded(model_key):
+                continue
+            try:
+                get_engine().warmup(model_key)
+                self.log_action(f"model warm {model_key}")
+            except Exception as exc:  # noqa: BLE001
+                self.log_action(f"model warmup failed {model_key}: {exc}")
 
     def _parse_telemetry_line(self, agent_id: str, line: str) -> Event | None:
         line = line.strip()
@@ -97,8 +109,10 @@ class Watchdog:
         for request in pop_spawn_requests():
             agent_id = request["agent_id"]
             profile = request["profile"]
+            model = request.get("model", "qwen-1.5b")
+            prompt = request.get("prompt", "")
             try:
-                short_id = self.runner.spawn_agent(agent_id, profile)
+                short_id = self.runner.spawn_agent(agent_id, profile, model, prompt)
                 self.last_heartbeat[agent_id] = time.time()
                 self.last_log_check[agent_id] = 0.0
                 self.log_action(f"spawned {agent_id} ({profile}) -> {short_id}")
@@ -181,14 +195,41 @@ class Watchdog:
                     ),
                 )
 
-    def _build_dashboard(self) -> Panel:
-        table = Table(title="Managed Agents", expand=True)
-        table.add_column("Agent ID", style="cyan", no_wrap=True)
-        table.add_column("Profile", style="magenta")
-        table.add_column("Status", style="green")
-        table.add_column("Container ID")
-        table.add_column("Last Heartbeat")
-        table.add_column("Violations")
+    def _build_dashboard(self) -> Layout:
+        valid, _reason = verify_wrapper_containment()
+        chain_valid, total, broken_id = verify_chain()
+
+        # --- Header ---
+        wrapper = (
+            Text("INTACT", style="bold black on green")
+            if valid
+            else Text("BREACH", style="bold black on red")
+        )
+        chain = (
+            Text(f"VALID {total}", style="bold black on green")
+            if chain_valid
+            else Text(f"BROKEN @{broken_id}", style="bold black on red")
+        )
+        header_body = Text()
+        header_body.append("WRAPPER ", style="bold")
+        header_body.append(wrapper)
+        header_body.append("  CHAIN ", style="bold")
+        header_body.append(chain)
+        header = Panel(
+            header_body,
+            title="ORWELLBLUE WATCHDOG",
+            subtitle=f"TICK {self.tick_count}  KILLED {len(self.killed_agents)}",
+            border_style="blue",
+            padding=(0, 1),
+        )
+
+        # --- Agents table ---
+        table = Table(expand=True, header_style="bold", border_style="dim")
+        table.add_column("AGENT ID", style="cyan", no_wrap=True)
+        table.add_column("STATUS", no_wrap=True)
+        table.add_column("CONTAINER", style="dim", no_wrap=True)
+        table.add_column("LAST HB", justify="right", style="dim", no_wrap=True)
+        table.add_column("VIOLATIONS", justify="right", no_wrap=True)
 
         try:
             summary = get_agents_summary()
@@ -196,48 +237,45 @@ class Watchdog:
             summary = []
             self.log_action(f"summary error: {exc}")
 
+        now = time.time()
+        status_colors = {
+            "running": "green",
+            "frozen": "yellow",
+            "killed": "red",
+            "self_destructed": "red",
+        }
         for record in summary:
-            status_color = {
-                "running": "green",
-                "frozen": "yellow",
-                "killed": "red",
-                "self_destructed": "red",
-            }.get(record["status"], "white")
-
+            status = record["status"]
             last_hb = record["last_heartbeat"]
-            hb_text = f"{last_hb:.1f}" if last_hb else "—"
-
+            hb_text = f"{max(0, int(now - last_hb))}s" if last_hb else "—"
             table.add_row(
                 record["agent_id"],
-                str(record.get("profile", "—")),
-                Text(record["status"], style=status_color),
+                Text(status.upper(), style=status_colors.get(status, "white")),
                 str(record.get("container_id") or "—"),
                 hb_text,
                 str(record["violations"]),
             )
 
-        valid, reason = verify_wrapper_containment()
-        chain_valid, total, broken_id = verify_chain()
+        if not summary:
+            table.add_row("[dim]no agents deployed[/dim]", "", "", "", "")
 
-        status_lines: Iterable[str] = [
-            f"Wrapper intact: {'[green]OK[/green]' if valid else '[red]FAIL[/red]'} ({reason})",
-            f"Hash chain: {'[green]VALID[/green]' if chain_valid else '[red]BROKEN[/red]'} ({total} events, broken_at={broken_id})",
-            f"Tick: {self.tick_count} | Killed agents: {len(self.killed_agents)}",
-        ]
-        status_panel = Panel("\n".join(status_lines), title="Watchdog Status")
-        actions_panel = Panel(
-            "\n".join(self.recent_actions[-12:]) or "No actions yet",
+        body = Panel(table, title="Agents", border_style="blue", padding=(0, 1))
+
+        # --- Recent actions ---
+        actions = Panel(
+            "\n".join(self.recent_actions[-6:]) or "No actions yet",
             title="Recent Actions",
-        )
-
-        grid = Table.grid(expand=True)
-        grid.add_row(status_panel, actions_panel)
-
-        return Panel(
-            grid,
-            title="OrwellBlue Watchdog",
             border_style="blue",
+            padding=(0, 1),
         )
+
+        layout = Layout()
+        layout.split_column(
+            Layout(header, name="header", size=3),
+            Layout(body, name="body"),
+            Layout(actions, name="actions", size=8),
+        )
+        return layout
 
     def tick(self) -> None:
         self.tick_count += 1
@@ -254,6 +292,7 @@ class Watchdog:
 
     def run(self) -> None:
         self.log_action("watchdog started")
+        threading.Thread(target=self._warmup_models, daemon=True).start()
         with Live(
             self._build_dashboard(), refresh_per_second=2, console=console
         ) as live:

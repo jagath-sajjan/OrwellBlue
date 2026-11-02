@@ -82,10 +82,26 @@ class _Store:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     agent_id TEXT NOT NULL,
                     profile TEXT NOT NULL,
+                    model TEXT NOT NULL DEFAULT 'qwen-1.5b',
+                    prompt TEXT NOT NULL DEFAULT '',
                     requested_at REAL NOT NULL
                 );
                 """
             )
+            columns = {
+                row[1]
+                for row in self._conn.execute(
+                    "PRAGMA table_info(spawn_requests);"
+                ).fetchall()
+            }
+            if "model" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE spawn_requests ADD COLUMN model TEXT NOT NULL DEFAULT 'qwen-1.5b';"
+                )
+            if "prompt" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE spawn_requests ADD COLUMN prompt TEXT NOT NULL DEFAULT '';"
+                )
 
     @staticmethod
     def _canonical_detail(detail: dict) -> str:
@@ -253,21 +269,27 @@ class _Store:
             for row in rows
         ]
 
-    def request_spawn(self, agent_id: str, profile: str) -> None:
+    def request_spawn(
+        self,
+        agent_id: str,
+        profile: str,
+        model: str = "qwen-1.5b",
+        prompt: str = "",
+    ) -> None:
         with self._db_lock:
             self._conn.execute(
                 """
-                INSERT INTO spawn_requests (agent_id, profile, requested_at)
-                VALUES (?, ?, ?);
+                INSERT INTO spawn_requests (agent_id, profile, model, prompt, requested_at)
+                VALUES (?, ?, ?, ?, ?);
                 """,
-                (agent_id, profile, _now()),
+                (agent_id, profile, model, prompt, _now()),
             )
 
     def pop_spawn_requests(self) -> list[dict]:
         with self._db_lock:
             rows = self._conn.execute(
                 """
-                SELECT id, agent_id, profile, requested_at
+                SELECT id, agent_id, profile, model, prompt, requested_at
                 FROM spawn_requests
                 ORDER BY id ASC;
                 """
@@ -279,7 +301,9 @@ class _Store:
                 "id": row[0],
                 "agent_id": row[1],
                 "profile": row[2],
-                "requested_at": row[3],
+                "model": row[3],
+                "prompt": row[4],
+                "requested_at": row[5],
             }
             for row in rows
         ]
@@ -398,8 +422,13 @@ def pop_kill_requests() -> list[dict]:
     return get_store().pop_kill_requests()
 
 
-def request_spawn(agent_id: str, profile: str) -> None:
-    get_store().request_spawn(agent_id, profile)
+def request_spawn(
+    agent_id: str,
+    profile: str,
+    model: str = "qwen-1.5b",
+    prompt: str = "",
+) -> None:
+    get_store().request_spawn(agent_id, profile, model, prompt)
 
 
 def pop_spawn_requests() -> list[dict]:

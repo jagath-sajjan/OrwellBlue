@@ -164,6 +164,8 @@ def test_fastapi_contract_endpoints(client: TestClient, isolated_store):
         "queued": True,
         "agent_id": "web-1",
         "profile": "default",
+        "model": "qwen-1.5b",
+        "prompt": "",
     }
 
     # Agents summary schema.

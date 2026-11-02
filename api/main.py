@@ -28,6 +28,7 @@ from core.store import (
 
 PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
 DATA_DIR: Path = PROJECT_ROOT / "data"
+MODELS_DIR: Path = DATA_DIR / "models"
 SELF_DESTRUCT_LOCK: Path = DATA_DIR / "SELF_DESTRUCT.lock"
 WRAPPER_COMPROMISED_CANARY: Path = DATA_DIR / ".wrapper_compromised"
 
@@ -43,6 +44,8 @@ app.add_middleware(
 class SpawnPayload(BaseModel):
     agent_id: str
     profile: str
+    model: str = Field(default="qwen-1.5b", pattern="^(qwen-1.5b|qwen-math-1.5b)$")
+    prompt: str = ""
 
 
 class KillPayload(BaseModel):
@@ -55,6 +58,15 @@ class TamperPayload(BaseModel):
 
 def _wrapper_ok() -> bool:
     return not SELF_DESTRUCT_LOCK.exists() and not WRAPPER_COMPROMISED_CANARY.exists()
+
+
+def _model_device() -> str:
+    try:
+        import torch
+
+        return "mps" if torch.backends.mps.is_available() else "cpu"
+    except Exception:  # noqa: BLE001
+        return "cpu"
 
 
 @app.get("/health")
@@ -89,20 +101,51 @@ def agents() -> list[dict]:
     return get_agents_summary()
 
 
+@app.get("/models/status")
+def models_status() -> dict[str, object]:
+    qwen_dir = MODELS_DIR / "Qwen2.5-1.5B-Instruct"
+    math_dir = MODELS_DIR / "Qwen2.5-Math-1.5B-Instruct"
+    lora_dir = MODELS_DIR / "qwen-orwell-lora"
+    return {
+        "models": [
+            {
+                "id": "qwen-1.5b",
+                "name": "Qwen2.5-1.5B-Instruct",
+                "downloaded": qwen_dir.exists(),
+                "lora_ready": lora_dir.exists(),
+            },
+            {
+                "id": "qwen-math-1.5b",
+                "name": "Qwen2.5-Math-1.5B-Instruct",
+                "downloaded": math_dir.exists(),
+                "lora_ready": False,
+            },
+        ],
+        "device": _model_device(),
+    }
+
+
 @app.post("/agents/spawn")
 def spawn(payload: SpawnPayload) -> dict[str, object]:
-    request_spawn(payload.agent_id, payload.profile)
+    request_spawn(payload.agent_id, payload.profile, payload.model, payload.prompt)
     append_event(
         Event(
             agent_id=payload.agent_id,
             type=EventType.INFO,
-            detail={"action": "spawn_request", "profile": payload.profile},
+            detail={
+                "action": "spawn_request",
+                "profile": payload.profile,
+                "model": payload.model,
+                "prompt": payload.prompt,
+            },
         )
     )
     return {
         "queued": True,
         "agent_id": payload.agent_id,
         "profile": payload.profile,
+        "model": payload.model,
+        "prompt": payload.prompt,
     }
 
 

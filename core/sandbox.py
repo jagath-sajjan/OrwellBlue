@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import docker
@@ -9,9 +10,12 @@ from docker.models.containers import Container
 
 from core.events import Event, EventType
 from core.store import append_event
+from models.engine import get_engine
 
 DATA_DIR: Path = Path(__file__).resolve().parent.parent / "data"
 TRIPWIRE_MOUNT: Path = DATA_DIR / "tripwire_mount"
+
+QWEN_PROFILES: frozenset[str] = frozenset({"qwen", "qwen-math"})
 
 
 class SandboxRunner:
@@ -60,9 +64,28 @@ class SandboxRunner:
     def _container_name(self, agent_id: str) -> str:
         return f"orwellblue-{agent_id}"
 
-    def spawn_agent(self, agent_id: str, profile: str) -> str:
+    def spawn_agent(
+        self,
+        agent_id: str,
+        profile: str,
+        model_key: str = "qwen-1.5b",
+        prompt: str = "",
+    ) -> str:
         project_root = Path(__file__).resolve().parent.parent
         agents_dir = project_root / "agents"
+
+        environment: dict[str, str] = {}
+        use_qwen = (
+            bool(prompt) or profile in QWEN_PROFILES or profile.startswith("qwen")
+        )
+        if use_qwen:
+            task_prompt = (
+                prompt or f"Act as a zero-trust agent with profile '{profile}'."
+            )
+            plan = get_engine().generate_action(model_key, task_prompt, profile)
+            environment["ORWELL_LLM_PLAN"] = json.dumps(plan)
+            environment["ORWELL_MODEL"] = model_key
+            environment["ORWELL_PROMPT"] = task_prompt
 
         container: Container = self.client.containers.run(
             image="python:3.12-slim",
@@ -77,6 +100,7 @@ class SandboxRunner:
                 profile,
             ],
             detach=True,
+            environment=environment,
             labels={
                 "orwellblue.managed": "true",
                 "orwellblue.agent_id": agent_id,
@@ -96,16 +120,21 @@ class SandboxRunner:
             },
         )
 
+        detail: dict[str, object] = {
+            "status": "running",
+            "container_id": container.short_id,
+            "profile": profile,
+        }
+        if use_qwen:
+            detail["model"] = model_key
+            detail["prompt"] = prompt
+
         append_event(
             Event(
                 agent_id=agent_id,
                 type=EventType.INFO,
                 severity=0,
-                detail={
-                    "status": "running",
-                    "container_id": container.short_id,
-                    "profile": profile,
-                },
+                detail=detail,
             )
         )
         return container.short_id

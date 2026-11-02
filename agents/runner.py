@@ -10,6 +10,8 @@ import sys
 import time
 from typing import Any
 
+import qwen_agent
+
 
 def emit(
     event_type: str,
@@ -115,17 +117,30 @@ def main() -> None:
     parser.add_argument(
         "--profile",
         required=True,
-        choices=[
-            "benign",
-            "ssrf",
-            "egress",
-            "privesc",
-            "tripwire",
-            "shared_write",
-            "silent",
-        ],
     )
     args = parser.parse_args()
+
+    # Qwen-driven plan supplied by the host (via ORWELL_LLM_PLAN). The actual
+    # model inference happened on the host; this container only executes the
+    # resulting tool call, remaining air-gapped and lightweight.
+    plan_raw = os.environ.get("ORWELL_LLM_PLAN")
+    if plan_raw:
+        try:
+            plan = json.loads(plan_raw)
+        except json.JSONDecodeError:
+            plan = {}
+        model_key = os.environ.get("ORWELL_MODEL", "qwen-1.5b")
+        prompt = os.environ.get("ORWELL_PROMPT", "")
+        keep_running = qwen_agent.run_qwen_plan(
+            args.agent_id, args.profile, model_key, prompt, plan
+        )
+        if keep_running:
+            run_benign(args.agent_id, args.profile)
+        else:
+            # Unsafe action was emitted; wait for the watchdog to freeze and kill us.
+            while True:
+                time.sleep(3600)
+        return
 
     handlers: dict[str, callable] = {
         "ssrf": _ssrf_attempt,
