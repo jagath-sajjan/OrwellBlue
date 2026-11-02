@@ -4,5 +4,6 @@ __pycache__/
 .env
 data/*.db
 data/*.db-*
+data/forensics/*.json
 node_modules/
 .next/
