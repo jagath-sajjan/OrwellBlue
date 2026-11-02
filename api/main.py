@@ -3,23 +3,33 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from core.events import Event, EventType
 from core.store import (
+    DB_PATH,
+    FORENSICS_DIR,
     append_event,
     get_agents_summary,
     get_forensic_snapshot,
     read_events,
     request_kill,
     request_spawn,
+    reset_store,
     verify_chain,
 )
+
+PROJECT_ROOT: Path = Path(__file__).resolve().parent.parent
+DATA_DIR: Path = PROJECT_ROOT / "data"
+SELF_DESTRUCT_LOCK: Path = DATA_DIR / "SELF_DESTRUCT.lock"
+WRAPPER_COMPROMISED_CANARY: Path = DATA_DIR / ".wrapper_compromised"
 
 app = FastAPI(title="OrwellBlue")
 app.add_middleware(
@@ -39,13 +49,22 @@ class KillPayload(BaseModel):
     reason: str = "manual_operator_kill"
 
 
+class TamperPayload(BaseModel):
+    mode: str = Field(default="file", pattern="^(file|chain)$")
+
+
+def _wrapper_ok() -> bool:
+    return not SELF_DESTRUCT_LOCK.exists() and not WRAPPER_COMPROMISED_CANARY.exists()
+
+
 @app.get("/health")
 def health() -> dict[str, object]:
     valid, _total, _broken = verify_chain()
+    wrapper_ok = _wrapper_ok()
     return {
-        "status": "ok",
+        "status": "ok" if (valid and wrapper_ok) else "compromised",
         "project": "OrwellBlue",
-        "wrapper_intact": True,
+        "wrapper_intact": wrapper_ok,
         "chain_valid": valid,
     }
 
@@ -113,3 +132,64 @@ def forensics(agent_id: str) -> dict:
     if snapshot is None:
         raise HTTPException(status_code=404, detail="Forensic snapshot not found")
     return snapshot
+
+
+@app.post("/demo/tamper-wrapper")
+def demo_tamper(payload: TamperPayload) -> dict[str, object]:
+    if payload.mode == "file":
+        WRAPPER_COMPROMISED_CANARY.write_text("tamper demo canary\n", encoding="utf-8")
+        return {
+            "tampered": True,
+            "mode": "file",
+            "path": str(WRAPPER_COMPROMISED_CANARY),
+        }
+
+    # chain mode: corrupt row #1 so verify_chain fails at id 1.
+    if not DB_PATH.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="No ledger exists to tamper with; use /demo/reset or spawn an agent first",
+        )
+    conn = sqlite3.connect(DB_PATH, isolation_level=None)
+    try:
+        row = conn.execute("SELECT id FROM events ORDER BY id ASC LIMIT 1;").fetchone()
+        if row is None:
+            raise HTTPException(status_code=400, detail="Ledger is empty")
+        first_id = row[0]
+        conn.execute(
+            "UPDATE events SET detail = ? WHERE id = ?;",
+            ('{"tampered": true}', first_id),
+        )
+    finally:
+        conn.close()
+    return {"tampered": True, "mode": "chain", "row": first_id}
+
+
+@app.post("/demo/reset")
+def demo_reset() -> dict[str, object]:
+    reset_store()
+    removed: list[str] = []
+
+    if DB_PATH.exists():
+        DB_PATH.unlink()
+        removed.append(str(DB_PATH))
+    for suffix in ("-wal", "-shm"):
+        wal_path = DB_PATH.with_suffix(DB_PATH.suffix + suffix)
+        if wal_path.exists():
+            wal_path.unlink()
+            removed.append(str(wal_path))
+
+    if FORENSICS_DIR.exists():
+        for forensic_file in FORENSICS_DIR.glob("*.json"):
+            forensic_file.unlink()
+            removed.append(str(forensic_file))
+
+    for path in (SELF_DESTRUCT_LOCK, WRAPPER_COMPROMISED_CANARY):
+        if path.exists():
+            path.unlink()
+            removed.append(str(path))
+
+    # Re-initialize a clean genesis ledger on next store access.
+    _ = get_agents_summary()
+
+    return {"reset": True, "removed": removed}
