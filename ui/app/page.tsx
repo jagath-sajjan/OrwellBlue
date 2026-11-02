@@ -7,9 +7,11 @@ import {
 } from "lucide-react";
 import { type FormEvent, useEffect, useState } from "react";
 import {
-  fetchAgents, fetchHealth, getUseMockMode, killAgent, resetMockSimulation,
-  setUseMockMode, spawnAgent, subscribeEvents, verifyHashChain,
+  fetchAgents, fetchHealth, getUseMockMode, killAgent, resetSandboxEnv,
+  setUseMockMode, spawnAgent, subscribeEvents, triggerWrapperTamper, verifyHashChain,
 } from "../lib/api";
+import AlertToastFeed from "../components/AlertToastFeed";
+import AttackLabBar from "../components/AttackLabBar";
 import ChainLedgerDrawer from "../components/ChainLedgerDrawer";
 import ForensicModal from "../components/ForensicModal";
 import SelfDestructOverlay from "../components/SelfDestructOverlay";
@@ -41,6 +43,7 @@ export default function Home() {
   const [ledgerOpen, setLedgerOpen] = useState(false);
   const [breach, setBreach] = useState<SandboxEvent | null>(null);
   const [breachReason, setBreachReason] = useState("");
+  const [toastGeneration, setToastGeneration] = useState(0);
   const [error, setError] = useState("");
   const [clock, setClock] = useState("--:--:--");
 
@@ -52,6 +55,8 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
+    const storedMode = getUseMockMode();
+    setUseMockMode(storedMode);
     const initialize = async () => {
       const [healthData, agentData, chainData] = await Promise.all([fetchHealth(), fetchAgents(), verifyHashChain()]);
       if (!active) return;
@@ -67,6 +72,11 @@ export default function Home() {
       if (event.type === "self_destruct") {
         setBreach(event);
         setBreachReason(String(event.detail.reason ?? "Wrapper breach detected. Hardcoded self-destruct executed."));
+        setHealth((current) => current ? {
+          ...current,
+          wrapper_intact: false,
+          chain_valid: event.detail.broken_at_id ? false : current.chain_valid,
+        } : current);
       }
       setAgents((current) => current.map((agent) => {
         if (agent.agent_id !== event.agent_id) return agent;
@@ -81,9 +91,18 @@ export default function Home() {
     const clockTimer = window.setInterval(() => setClock(new Date().toLocaleTimeString("en-US", { hour12: false, timeZone: "UTC" })), 1000);
     const refreshTimer = window.setInterval(() => {
       setMockMode(getUseMockMode());
-      void fetchHealth().then((value) => { setHealth(value); recordHealthBreach(value); }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to fetch health status."));
-      void fetchAgents().then(setAgents);
-    }, 5000);
+      if (getUseMockMode()) return;
+      void fetchHealth().then((value) => {
+        setHealth(value);
+        recordHealthBreach(value);
+        setChain((current) => ({
+          valid: value.chain_valid,
+          total_events: current?.total_events ?? 0,
+          broken_at_id: value.chain_valid ? null : current?.broken_at_id ?? null,
+        }));
+      }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to fetch health status."));
+      void fetchAgents().then(setAgents).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Unable to fetch agents."));
+    }, 2000);
     return () => {
       active = false;
       unsubscribe();
@@ -118,6 +137,22 @@ export default function Home() {
     }
   }
 
+  async function launchPreset(id: string, selectedProfile: AgentProfile) {
+    const agent = await spawnAgent(id, selectedProfile);
+    setAgents((current) => [agent, ...current.filter((item) => item.agent_id !== id)]);
+    setMockMode(getUseMockMode());
+  }
+
+  async function simulateWrapperBreach() {
+    const event = await triggerWrapperTamper();
+    if (event) {
+      setBreach(event);
+      setBreachReason(String(event.detail.reason ?? "Wrapper tamper demo triggered. Hardcoded self-destruct executed."));
+      setHealth((current) => current ? { ...current, wrapper_intact: false } : current);
+    }
+    setMockMode(getUseMockMode());
+  }
+
   async function toggleMode() {
     const nextMode = !mockMode;
     setUseMockMode(nextMode);
@@ -131,11 +166,12 @@ export default function Home() {
   }
 
   async function resetSimulation() {
-    resetMockSimulation();
+    await resetSandboxEnv();
     setEvents([]);
     setBreach(null);
     setBreachReason("");
     setError("");
+    setToastGeneration((generation) => generation + 1);
     const [healthData, agentData, chainData] = await Promise.all([fetchHealth(), fetchAgents(), verifyHashChain()]);
     setHealth(healthData);
     setAgents(agentData);
@@ -185,6 +221,14 @@ export default function Home() {
               <button className="deploy-button" type="submit" disabled={Boolean(breach || breachReason)}><Zap size={14} />SPAWN AGENT</button>
             </div>
           </form>
+          <AttackLabBar
+            locked={Boolean(breach || breachReason)}
+            mockMode={mockMode}
+            onLaunch={launchPreset}
+            onTamper={simulateWrapperBreach}
+            onReset={resetSimulation}
+            onError={setError}
+          />
           <div className="fleet-label"><span>AGENT INVENTORY <b>{agents.length.toString().padStart(2, "0")}</b></span><span>HEARTBEAT / 2.2S</span></div>
           <div className="agent-grid">
             {agents.map((agent) => <article className={`agent-card ${agent.status !== "running" ? "agent-inactive" : ""}`} key={agent.agent_id}>
@@ -205,7 +249,7 @@ export default function Home() {
           </div>
           <div className="event-column-head"><span>TIME / AGENT</span><span>EVENT / SEVERITY</span><span>HASH CHAIN</span></div>
           <div className="event-list" aria-live="polite">
-            {visibleEvents.map((event) => <article className={`event-row severity-${event.severity}`} key={event.id}>
+            {visibleEvents.map((event) => <article className={`event-row severity-${event.severity}`} key={`${event.id}-${event.hash}`}>
               <div className="event-origin"><time>{timeLabel(event.ts)}</time><span>{event.agent_id}</span></div>
               <div className="event-description"><strong>{event.type.replaceAll("_", " ").toUpperCase()}</strong><span>{severityNames[event.severity]} · {String(event.detail.reason ?? event.detail.target ?? event.detail.message ?? "sandbox event")}</span></div>
               <div className="hash-link"><code>{event.prev_hash.slice(0, 8)}<i>→</i>{event.hash.slice(0, 8)}</code><span>#{event.id.toString().padStart(4, "0")}</span></div>
@@ -224,6 +268,7 @@ export default function Home() {
         setBreachReason(String(event.detail.reason ?? "SQLite audit log tampering detected. Hardcoded self-destruct executed."));
       }} />}
       <SelfDestructOverlay active={Boolean(breach || breachReason)} reason={breachReason} mockMode={mockMode} onReset={() => void resetSimulation()} />
+      <AlertToastFeed key={toastGeneration} events={events} onInspect={setForensicAgentId} />
     </main>
   );
 }

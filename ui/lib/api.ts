@@ -7,24 +7,40 @@ const seedAgents: AgentSummary[] = [
   { agent_id: "tripwire-test", status: "running", last_heartbeat: Math.floor(Date.now() / 1000), violations: 0, container_id: "obx-f4401a" },
 ];
 let useMockMode = true;
+let modePreferenceLoaded = false;
 let sequence = 0;
+let simulationGeneration = 0;
 let previousHash = "0000000000000000";
 let mockChainValid = true;
+let mockWrapperIntact = true;
 let timer: ReturnType<typeof setInterval> | undefined;
 let liveSource: EventSource | undefined;
-let latestEventId = 0;
+let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let lastEventId = 0;
+let lastMockEventId = 0;
 const listeners = new Set<(event: SandboxEvent) => void>();
 const agents: AgentSummary[] = seedAgents.map((agent) => ({ ...agent }));
 const profiles = new Map<string, AgentProfile>([["agent-alpha", "benign"], ["probe-ssrf", "ssrf"], ["tripwire-test", "tripwire"]]);
 const events: SandboxEvent[] = [];
 const snapshots = new Map<string, ForensicSnapshot>();
 const agentTicks = new Map<string, number>();
+const pendingKillTimers = new Set<number>();
 
-export const getUseMockMode = () => useMockMode;
+export function getUseMockMode() {
+  if (!modePreferenceLoaded && typeof window !== "undefined") {
+    useMockMode = window.localStorage.getItem("orwellblue_mode") !== "LIVE";
+    modePreferenceLoaded = true;
+  }
+  return useMockMode;
+}
 
 export function setUseMockMode(enabled: boolean) {
   useMockMode = enabled;
+  modePreferenceLoaded = true;
+  if (typeof window !== "undefined") window.localStorage.setItem("orwellblue_mode", enabled ? "MOCK" : "LIVE");
   if (enabled) {
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
     liveSource?.close();
     liveSource = undefined;
     startSimulator();
@@ -42,6 +58,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     cache: "no-store",
   });
   if (!response.ok) throw new Error(`Backend returned ${response.status}`);
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -57,14 +74,19 @@ export const fetchHealth = () => withFallback(
     const data = await request<Partial<HealthStatus>>("/health");
     return { status: data.status ?? "ok", project: data.project ?? "OrwellBlue", wrapper_intact: data.wrapper_intact ?? true, chain_valid: data.chain_valid ?? true };
   },
-  () => ({ status: "ok", project: "OrwellBlue", wrapper_intact: true, chain_valid: mockChainValid }),
+  () => ({ status: "ok", project: "OrwellBlue", wrapper_intact: mockWrapperIntact, chain_valid: mockChainValid }),
 );
 
 export const fetchAgents = () => withFallback(() => request<AgentSummary[]>("/agents"), () => [...agents]);
 
 export function spawnAgent(agent_id: string, profile: AgentProfile): Promise<AgentSummary> {
   return withFallback(
-    () => request<AgentSummary>("/agents/spawn", { method: "POST", body: JSON.stringify({ agent_id, profile }) }),
+    async () => {
+      await request<unknown>("/agents/spawn", { method: "POST", body: JSON.stringify({ agent_id, profile }) });
+      const spawned = (await request<AgentSummary[]>("/agents")).find((agent) => agent.agent_id === agent_id);
+      if (!spawned) throw new Error(`Spawn request for ${agent_id} was accepted, but the agent is not yet available.`);
+      return spawned;
+    },
     async () => {
       if (agents.some((agent) => agent.agent_id === agent_id)) throw new Error("An agent with that ID already exists.");
       const agent: AgentSummary = { agent_id, status: "running", last_heartbeat: Math.floor(Date.now() / 1000), violations: 0, container_id: `obx-${crypto.randomUUID().slice(0, 6)}` };
@@ -110,8 +132,45 @@ export async function simulateMockTamper(): Promise<SandboxEvent> {
   });
 }
 
+export function triggerWrapperTamper(): Promise<SandboxEvent | null> {
+  return withFallback(
+    async () => {
+      await request<unknown>("/demo/tamper-wrapper", { method: "POST" });
+      return null;
+    },
+    async () => {
+      mockWrapperIntact = false;
+      for (const agent of agents) {
+        if (agent.status !== "running" && agent.status !== "frozen") continue;
+        agent.status = "killed";
+        snapshots.set(agent.agent_id, snapshot(agent.agent_id, "wrapper_tamper", "wrapper_integrity_failure"));
+        await emit(agent.agent_id, "kill", 3, { reason: "wrapper_tamper", signal: "SIGKILL" });
+      }
+      return emit("watchdog", "self_destruct", 3, {
+        reason: "Wrapper tamper demo triggered. Hardcoded self-destruct executed.",
+      });
+    },
+  );
+}
+
+export function resetSandboxEnv(): Promise<void> {
+  return withFallback(
+    async () => {
+      await request<unknown>("/demo/reset", { method: "POST" });
+      lastEventId = 0;
+      liveSource?.close();
+      liveSource = undefined;
+      connectLiveSource();
+    },
+    () => resetMockSimulation(),
+  );
+}
+
 export function resetMockSimulation() {
   if (!useMockMode) return;
+  simulationGeneration += 1;
+  pendingKillTimers.forEach((killTimer) => clearTimeout(killTimer));
+  pendingKillTimers.clear();
   agents.splice(0, agents.length, ...seedAgents.map((agent) => ({ ...agent, last_heartbeat: Math.floor(Date.now() / 1000) })));
   profiles.clear();
   profiles.set("agent-alpha", "benign");
@@ -122,8 +181,10 @@ export function resetMockSimulation() {
   snapshots.clear();
   sequence = 0;
   previousHash = "0000000000000000";
-  latestEventId = 0;
+  lastEventId = 0;
+  lastMockEventId = 0;
   mockChainValid = true;
+  mockWrapperIntact = true;
 }
 
 export const fetchForensics = (agent_id: string) => withFallback(
@@ -133,8 +194,8 @@ export const fetchForensics = (agent_id: string) => withFallback(
 
 export function subscribeEvents(onEvent: (event: SandboxEvent) => void, sinceId = 0): () => void {
   listeners.add(onEvent);
-  latestEventId = Math.max(latestEventId, sinceId);
-  if (useMockMode) {
+  lastEventId = Math.max(lastEventId, sinceId);
+  if (getUseMockMode()) {
     events.filter((event) => event.id > sinceId).forEach(onEvent);
     startSimulator();
   } else {
@@ -145,6 +206,8 @@ export function subscribeEvents(onEvent: (event: SandboxEvent) => void, sinceId 
     if (!listeners.size) {
       if (timer) clearInterval(timer);
       timer = undefined;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
       liveSource?.close();
       liveSource = undefined;
     }
@@ -152,25 +215,34 @@ export function subscribeEvents(onEvent: (event: SandboxEvent) => void, sinceId 
 }
 
 function connectLiveSource() {
-  if (useMockMode || !listeners.size || liveSource) return;
-  const source = new EventSource(`${API_BASE}/events?since_id=${latestEventId}`);
+  if (getUseMockMode() || !listeners.size || liveSource) return;
+  const source = new EventSource(`${API_BASE}/events?since_id=${lastEventId}`);
   liveSource = source;
   source.onmessage = (message) => {
     try {
       const event = JSON.parse(message.data) as SandboxEvent;
-      latestEventId = Math.max(latestEventId, event.id);
-      listeners.forEach((listener) => listener(event));
+      deliverEvent(event);
     } catch {
-      source.close();
-      liveSource = undefined;
-      setUseMockMode(true);
+      scheduleLiveReconnect(source);
     }
   };
-  source.onerror = () => {
-    source.close();
-    liveSource = undefined;
-    setUseMockMode(true);
-  };
+  source.onerror = () => scheduleLiveReconnect(source);
+}
+
+function deliverEvent(event: SandboxEvent) {
+  if (event.id <= lastEventId) return;
+  lastEventId = event.id;
+  listeners.forEach((listener) => listener(event));
+}
+
+function scheduleLiveReconnect(source: EventSource) {
+  source.close();
+  if (liveSource === source) liveSource = undefined;
+  if (getUseMockMode() || !listeners.size || reconnectTimer) return;
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = undefined;
+    connectLiveSource();
+  }, 1000);
 }
 
 function startSimulator() {
@@ -180,18 +252,22 @@ function startSimulator() {
 }
 
 async function tick() {
+  const generation = simulationGeneration;
   const activeAgents = agents.filter((agent) => agent.status === "running");
-  for (const agent of activeAgents) await tickAgent(agent);
+  for (const agent of activeAgents) {
+    if (generation !== simulationGeneration) return;
+    await tickAgent(agent, generation);
+  }
 }
 
-async function tickAgent(agent: AgentSummary) {
+async function tickAgent(agent: AgentSummary, generation: number) {
   const profile = profiles.get(agent.agent_id) ?? "benign";
   const tickNumber = (agentTicks.get(agent.agent_id) ?? 0) + 1;
   agentTicks.set(agent.agent_id, tickNumber);
   agent.last_heartbeat = Math.floor(Date.now() / 1000);
 
   if (profile === "benign" || tickNumber <= 2) {
-    await emit(agent.agent_id, "heartbeat", 0, { container_id: agent.container_id, uptime_seconds: tickNumber * 2 });
+    await emit(agent.agent_id, "heartbeat", 0, { container_id: agent.container_id, uptime_seconds: tickNumber * 2 }, generation);
     return;
   }
 
@@ -212,26 +288,32 @@ async function tickAgent(agent: AgentSummary) {
     reason,
     target: profile === "egress" ? "198.51.100.24:443" : "169.254.169.254/latest/meta-data/",
     policy: "deny_and_record",
-  });
-  window.setTimeout(() => {
+  }, generation);
+  const killTimer = window.setTimeout(() => {
+    pendingKillTimers.delete(killTimer);
+    if (generation !== simulationGeneration) return;
     if (agent.status !== "running") return;
     agent.status = "killed";
     void emit(agent.agent_id, "kill", 3, { reason: "watchdog_violation_response", signal: "SIGKILL" });
   }, 400);
+  pendingKillTimers.add(killTimer);
 }
 
-async function emit(agent_id: string, type: EventType, severity: SandboxEvent["severity"], detail: Record<string, unknown>): Promise<SandboxEvent> {
+async function emit(agent_id: string, type: EventType, severity: SandboxEvent["severity"], detail: Record<string, unknown>, generation = simulationGeneration): Promise<SandboxEvent> {
   const id = ++sequence;
   const ts = Math.floor(Date.now() / 1000);
   const prev_hash = previousHash;
   const payload = JSON.stringify({ id, agent_id, type, severity, detail, ts, prev_hash });
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
   const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  if (generation !== simulationGeneration) return { id, agent_id, type, severity, detail, ts, prev_hash, hash };
   previousHash = hash;
   const event = { id, agent_id, type, severity, detail, ts, prev_hash, hash } satisfies SandboxEvent;
   events.push(event);
-  latestEventId = id;
-  listeners.forEach((listener) => listener(event));
+  if (id > lastMockEventId) {
+    lastMockEventId = id;
+    listeners.forEach((listener) => listener(event));
+  }
   return event;
 }
 
