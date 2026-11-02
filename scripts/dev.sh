@@ -6,6 +6,23 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+log() {
+    echo -e "${GREEN}[orwellblue]${NC} $1"
+}
+
+warn() {
+    echo -e "${YELLOW}[orwellblue]${NC} $1" >&2
+}
+
+error() {
+    echo -e "${RED}[orwellblue]${NC} $1" >&2
+}
+
 # Clear stale demo markers so a previous self-destruct run doesn't block startup.
 if [[ -f "data/.wrapper_compromised" || -f "data/SELF_DESTRUCT.lock" ]]; then
     warn "Clearing stale wrapper compromise markers..."
@@ -26,23 +43,6 @@ fi
 if [[ -z "${DOCKER_HOST:-}" && -n "$DOCKER_ENDPOINT" ]]; then
     export DOCKER_HOST="$DOCKER_ENDPOINT"
 fi
-
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
-
-log() {
-    echo -e "${GREEN}[orwellblue]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[orwellblue]${NC} $1" >&2
-}
-
-error() {
-    echo -e "${RED}[orwellblue]${NC} $1" >&2
-}
 
 # 1. Verify Docker daemon is reachable.
 if ! docker info >/dev/null 2>&1; then
