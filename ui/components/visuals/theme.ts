@@ -10,6 +10,7 @@ export const COLORS = {
   softGreen: "#A8E6B8",
   softYellow: "#FFE08A",
   grey: "#A3A3A3",
+  orwellBlue: "#0052FF",
 } as const;
 
 export const SCENE = {
@@ -18,18 +19,18 @@ export const SCENE = {
   agentSize: 0.62,
   floorY: -3.2,
   floorHalf: 9.5,
-  orbitBase: 4.2,
-  orbitRange: 1.5,
+  orbitBase: 4.8,
+  orbitRange: 0,
   tetherY: 0,
   camera: { position: [0, 12.5, 23] as [number, number, number], target: [0, -0.6, 2] as [number, number, number] },
 } as const;
 
 export const GRAVEYARD = {
-  cols: 6,
-  xStart: -7.5,
-  xStep: 3,
-  zStart: 7.6,
-  zStep: 2,
+  cols: 8,
+  xStart: -5.6,
+  xStep: 1.6,
+  zStart: 4.2,
+  zStep: 1.5,
 } as const;
 
 export const STATUS_COLOR: Record<string, string> = {
@@ -62,10 +63,10 @@ export function graveyardSlotPosition(slot: number): [number, number, number] {
 }
 
 export const GRAVEYARD_ZONE = {
-  minX: -8.4,
-  maxX: 8.4,
-  minZ: 6.4,
-  maxZ: 10.6,
+  minX: -6.6,
+  maxX: 6.6,
+  minZ: 3.3,
+  maxZ: 6.2,
 } as const;
 
 export const TOMBSTONE_LIMIT = 12;

@@ -41,7 +41,7 @@ function RadarRing() {
       <ringGeometry args={[0.975, 1, 72]} />
       <meshBasicMaterial
         ref={material}
-        color={COLORS.ink}
+        color={COLORS.orwellBlue}
         transparent
         opacity={0.5}
         side={THREE.DoubleSide}
@@ -179,7 +179,7 @@ export function Core({
         {!breached && (
           <>
             <mesh geometry={geometry}>
-              <meshStandardMaterial color={COLORS.ink} flatShading />
+              <meshStandardMaterial color={COLORS.orwellBlue} flatShading />
             </mesh>
             <lineSegments geometry={edges}>
               <lineBasicMaterial ref={edgeMaterial} color={COLORS.bg} />
@@ -200,7 +200,7 @@ export function Core({
                 {/* Flat elongated plane acting as a shard */}
                 <planeGeometry args={[0.55 + i * 0.08, 0.22 + i * 0.04]} />
                 <meshStandardMaterial
-                  color={COLORS.ink}
+                  color={COLORS.orwellBlue}
                   flatShading
                   side={THREE.DoubleSide}
                 />

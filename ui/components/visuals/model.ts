@@ -1,6 +1,5 @@
 /** Pure derivation of scene state from the live data layer. */
 import type { AgentSummary, SandboxEvent } from "@/lib/types";
-import { SCENE } from "./theme";
 
 export type Status = AgentSummary["status"];
 
@@ -50,13 +49,13 @@ export function hashString(input: string): number {
   return (h >>> 0) / 4294967295;
 }
 
-export function orbitFor(id: string): Orbit {
-  const h = hashString(id);
+export function orbitFor(id: string, index = 0, total = 1): Orbit {
+  const phase = total > 1 ? (index / total) * Math.PI * 2 : hashString(id) * Math.PI * 2;
   return {
-    radius: SCENE.orbitBase + h * SCENE.orbitRange,
-    inclination: (hashString(`${id}:i`) - 0.5) * 0.7,
-    speed: 0.1 + hashString(`${id}:s`) * 0.22,
-    phase: hashString(`${id}:p`) * Math.PI * 2,
+    radius: 4.8,
+    inclination: 0,
+    speed: 0.18,
+    phase,
   };
 }
 
@@ -111,7 +110,6 @@ export function buildSceneModel(
 
   const live: SceneAgent[] = [];
   const tombstones: Tombstone[] = [];
-  let slot = 0;
 
   for (const agent of agents) {
     if (agent.status === "running" || agent.status === "frozen") {
@@ -122,8 +120,8 @@ export function buildSceneModel(
         containerId: agent.container_id ?? null,
         violations: agent.violations,
         lastHeartbeat: agent.last_heartbeat,
-        orbit: orbitFor(agent.agent_id),
-        graveyardSlot: slot,
+        orbit: { radius: 4.8, inclination: 0, speed: 0.18, phase: 0 },
+        graveyardSlot: -1,
       });
     } else {
       const info = killInfo.get(agent.agent_id);
@@ -132,11 +130,22 @@ export function buildSceneModel(
         reason: info?.reason ?? "killed",
         eventType: lastViolation.get(agent.agent_id) ?? "kill",
         killedAt: info?.killedAt ?? 0,
-        slot,
+        slot: 0,
       });
     }
-    slot += 1;
   }
+
+  // Sort live agents deterministically and distribute their orbits cleanly on the line
+  live.sort((a, b) => a.id.localeCompare(b.id));
+  live.forEach((agent, index) => {
+    agent.orbit = orbitFor(agent.id, index, live.length);
+  });
+
+  // Sort tombstones chronologically so they line up neatly in contiguous order on the line
+  tombstones.sort((a, b) => a.killedAt - b.killedAt || a.id.localeCompare(b.id));
+  tombstones.forEach((tombstone, index) => {
+    tombstone.slot = index;
+  });
 
   const latestViolation =
     [...events].reverse().find((event) => VIOLATION_TYPES.has(event.type)) ?? null;

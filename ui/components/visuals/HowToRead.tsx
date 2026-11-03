@@ -1,7 +1,7 @@
 import { Panel } from "@/components/ui/Panel";
 
 const SWATCHES: Array<{ label: string; swatch: React.ReactNode }> = [
-  { label: "Core (watchdog)", swatch: <Swatch className="bg-ink" /> },
+  { label: "Core (watchdog)", swatch: <Swatch className="bg-[#0052FF]" /> },
   { label: "Tether", swatch: <Swatch className="bg-ink h-1 w-4" /> },
   { label: "Black dot — heartbeat in", swatch: <Dot className="bg-ink" /> },
   { label: "Yellow packet — kill signal", swatch: <Swatch className="bg-soft-yellow rotate-45" /> },

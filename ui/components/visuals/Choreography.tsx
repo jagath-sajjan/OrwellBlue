@@ -44,7 +44,7 @@ function orbitPoint(id: string, time: number): THREE.Vector3 {
   const angle = phase + time * speed;
   return new THREE.Vector3(
     Math.cos(angle) * radius,
-    Math.sin(angle * 1.3 + phase) * 0.5,
+    0,
     Math.sin(angle) * radius,
   );
 }

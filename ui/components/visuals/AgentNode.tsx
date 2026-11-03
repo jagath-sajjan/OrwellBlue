@@ -51,18 +51,18 @@ export function AgentNode({
 
   useFrame(({ clock }) => {
     const t = clock.elapsedTime;
-    const { radius, inclination, speed, phase } = agent.orbit;
+    const { radius, speed, phase } = agent.orbit;
     const angle = phase + t * speed;
     const x = Math.cos(angle) * radius;
     const z = Math.sin(angle) * radius;
-    const y = Math.sin(angle * 1.3 + phase) * 0.5 + Math.sin(t * 2 + phase) * 0.12;
+    const y = 0;
 
     position.current.set(x, y, z);
     if (shadow.current) shadow.current.position.set(x, SCENE.floorY + 0.03, z);
     if (group.current) {
       group.current.position.copy(position.current);
-      group.current.rotation.y = angle * 0.6;
-      group.current.rotation.x = inclination * 0.4;
+      group.current.rotation.y = angle;
+      group.current.rotation.x = 0;
     }
   });
 
@@ -117,7 +117,7 @@ export function AgentNode({
       </group>
 
       {hovered || selected ? (
-        <mesh rotation={[-Math.PI / 2 + agent.orbit.inclination * 0.2, 0, 0]}>
+        <mesh rotation={[-Math.PI / 2, 0, 0]}>
           <torusGeometry args={[agent.orbit.radius, 0.012, 4, 128]} />
           <meshBasicMaterial color={COLORS.ink} transparent opacity={0.55} />
         </mesh>

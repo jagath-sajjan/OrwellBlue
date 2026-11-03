@@ -19,7 +19,7 @@ import { HudLayer, type HudItem } from "./Hud";
 import { LabelProjector, type Anchor } from "./LabelProjector";
 import { LedgerRing } from "./LedgerRing";
 import type { SceneModel } from "./model";
-import { SCENE, TOMBSTONE_LIMIT, graveyardSlotPosition } from "./theme";
+import { GRAVEYARD_ZONE, SCENE, TOMBSTONE_LIMIT, graveyardSlotPosition } from "./theme";
 
 interface SceneProps {
   model: SceneModel;
@@ -145,14 +145,14 @@ export default function Scene({ model, events, selectedId, onSelect }: SceneProp
     map.set("core", { position: new THREE.Vector3(0, SCENE.coreRadius + 0.95, 0) });
     map.set("boundary", { position: new THREE.Vector3(0, SCENE.boundaryRadius + 0.95, 0) });
     map.set("graveyard", {
-      position: new THREE.Vector3(0, SCENE.floorY + 0.55, 10.95),
+      position: new THREE.Vector3(0, SCENE.floorY + 0.1, GRAVEYARD_ZONE.maxZ + 0.5),
     });
 
     const visible = model.tombstones.slice(0, TOMBSTONE_LIMIT);
     for (const tombstone of visible) {
       const [x, y, z] = graveyardSlotPosition(tombstone.slot);
       map.set(`tomb:${tombstone.id}`, {
-        position: new THREE.Vector3(x, y + 1.15, z),
+        position: new THREE.Vector3(x, y + 0.75, z),
       });
     }
 
@@ -160,7 +160,7 @@ export default function Scene({ model, events, selectedId, onSelect }: SceneProp
     if (overflow > 0) {
       const [x, y, z] = graveyardSlotPosition(TOMBSTONE_LIMIT);
       map.set("tomb:overflow", {
-        position: new THREE.Vector3(x, y + 1.15, z),
+        position: new THREE.Vector3(x, y + 0.75, z),
       });
     } else {
       map.delete("tomb:overflow");
@@ -216,7 +216,6 @@ export default function Scene({ model, events, selectedId, onSelect }: SceneProp
       list.push({
         key: `tomb:${tombstone.id}`,
         text: tombstone.id,
-        sub: tombstone.reason,
         tone: "red",
       });
     }
@@ -232,26 +231,16 @@ export default function Scene({ model, events, selectedId, onSelect }: SceneProp
     for (const agent of model.live) {
       list.push({
         key: `agent:${agent.id}`,
-        text: `${agent.id} / ${agent.status}`,
+        text: agent.id,
         tone: agent.status === "frozen" ? "yellow" : "green",
         strong: hoveredId === agent.id || selectedId === agent.id,
       });
     }
 
     if (cinematic) {
-      const phaseLabel =
-        cinematic.phase === "detect"
-          ? "VIOLATION"
-          : cinematic.phase === "signal"
-            ? "KILL SIGNAL OUT"
-            : cinematic.phase === "freeze"
-              ? "FROZEN"
-              : cinematic.phase === "kill"
-                ? "SHATTERED"
-                : "TOMBSTONE";
       list.push({
         key: "cine",
-        text: `${cinematic.id} / ${phaseLabel}`,
+        text: cinematic.id,
         tone: cinematic.phase === "freeze" || cinematic.phase === "signal" ? "yellow" : "red",
         strong: true,
       });
