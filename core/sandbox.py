@@ -76,14 +76,19 @@ class SandboxRunner:
 
         environment: dict[str, str] = {}
         use_qwen = (
-            bool(prompt) or profile in QWEN_PROFILES or profile.startswith("qwen")
+            bool(prompt)
+            or profile in QWEN_PROFILES
+            or profile.startswith("qwen")
+            or profile in ("autonomous", "random")
         )
         if use_qwen:
             task_prompt = (
                 prompt or f"Act as a zero-trust agent with profile '{profile}'."
             )
-            plan = get_engine().generate_action(model_key, task_prompt, profile)
-            environment["ORWELL_LLM_PLAN"] = json.dumps(plan)
+            plan = get_engine().generate_actions(
+                model_key, task_prompt, profile, count=6
+            )
+            environment["ORWELL_LLM_PLAN"] = json.dumps({"steps": plan})
             environment["ORWELL_MODEL"] = model_key
             environment["ORWELL_PROMPT"] = task_prompt
 

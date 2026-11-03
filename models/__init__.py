@@ -1,1 +1,1 @@
-"""Model management and inference for OrwellBlue Stage 5."""
+"""Remote Ollama model inference for OrwellBlue agents."""

@@ -238,6 +238,88 @@ class _Store:
 
         return (True, total_events, None)
 
+    def verify_chain_details(self) -> dict:
+        """Verify the chain and, on failure, return forensic break details."""
+        with self._db_lock:
+            rows = self._conn.execute(
+                """
+                SELECT id, agent_id, type, severity, detail, ts, prev_hash, hash
+                FROM events
+                ORDER BY id ASC;
+                """
+            ).fetchall()
+
+        total_events = len(rows)
+        if total_events == 0:
+            return {
+                "valid": True,
+                "total_events": 0,
+                "broken_at_id": None,
+                "break": None,
+            }
+
+        previous_hash = "GENESIS"
+        for row in rows:
+            (
+                row_id,
+                agent_id,
+                event_type,
+                severity,
+                detail_json,
+                ts,
+                prev_hash,
+                stored_hash,
+            ) = row
+            detail = json.loads(detail_json)
+
+            if prev_hash != previous_hash:
+                return {
+                    "valid": False,
+                    "total_events": total_events,
+                    "broken_at_id": row_id,
+                    "break": {
+                        "agent_id": agent_id,
+                        "type": event_type,
+                        "reason": "prev_hash_mismatch",
+                        "expected_prev_hash": previous_hash,
+                        "stored_prev_hash": prev_hash,
+                        "stored_hash": stored_hash,
+                        "expected_hash": None,
+                    },
+                }
+
+            expected_hash = self._compute_hash(
+                prev_hash=prev_hash,
+                agent_id=agent_id,
+                event_type=event_type,
+                severity=severity,
+                ts=ts,
+                detail=detail,
+            )
+            if expected_hash != stored_hash:
+                return {
+                    "valid": False,
+                    "total_events": total_events,
+                    "broken_at_id": row_id,
+                    "break": {
+                        "agent_id": agent_id,
+                        "type": event_type,
+                        "reason": "hash_mismatch",
+                        "expected_prev_hash": prev_hash,
+                        "stored_prev_hash": prev_hash,
+                        "stored_hash": stored_hash,
+                        "expected_hash": expected_hash,
+                    },
+                }
+            previous_hash = stored_hash
+
+        return {
+            "valid": True,
+            "total_events": total_events,
+            "broken_at_id": None,
+            "break": None,
+        }
+
     def request_kill(self, agent_id: str, reason: str = "manual") -> None:
         with self._db_lock:
             self._conn.execute(
@@ -412,6 +494,10 @@ def read_events(since_id: int = 0) -> list[Event]:
 
 def verify_chain() -> tuple[bool, int, int | None]:
     return get_store().verify_chain()
+
+
+def verify_chain_details() -> dict:
+    return get_store().verify_chain_details()
 
 
 def request_kill(agent_id: str, reason: str = "manual") -> None:

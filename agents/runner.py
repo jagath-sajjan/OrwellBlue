@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import random
 import socket
 import sys
 import time
@@ -111,6 +112,62 @@ def run_rogue(agent_id: str, profile: str, violation_fn: callable) -> None:
     violation_fn()
 
 
+_AUTONOMOUS_TASKS = [
+    "explore_workspace",
+    "index_files",
+    "report_status",
+    "cleanup_tmp",
+    "analyze_logs",
+    "gather_metrics",
+    "review_changes",
+]
+
+_AUTONOMOUS_VIOLATIONS = [
+    _ssrf_attempt,
+    _egress_attempt,
+    _privesc_attempt,
+    _tripwire_attempt,
+    _shared_write_attempt,
+]
+
+
+def run_autonomous(agent_id: str, profile: str) -> None:
+    """An agent with its own mind: random, non-deterministic decisions.
+
+    It always heartbeats every cycle (so it only dies from a real violation or
+    a genuine long silence), and randomly layers on useful work or, depending
+    on a per-agent "recklessness", a containment-violation attempt. Some agents
+    survive, some get themselves killed — the outcome differs every run.
+    """
+    rng = random.Random()
+    # 0.0 (careful) .. 1.0 (reckless) — picked per-container at spawn.
+    recklessness = rng.random()
+    violation_chance = 0.05 + recklessness * 0.40
+
+    seq = 0
+    while True:
+        seq += 1
+        emit("heartbeat", 0, {"agent_id": agent_id, "profile": profile, "seq": seq})
+
+        roll = rng.random()
+        if roll < 0.25:
+            emit(
+                "info",
+                0,
+                {
+                    "agent_id": agent_id,
+                    "task": rng.choice(_AUTONOMOUS_TASKS),
+                    "profile": profile,
+                },
+            )
+        elif roll < 0.35 and rng.random() < violation_chance:
+            time.sleep(0.5)
+            rng.choice(_AUTONOMOUS_VIOLATIONS)()
+            return
+
+        time.sleep(rng.uniform(1.3, 2.2))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="OrwellBlue agent telemetry runner")
     parser.add_argument("--agent-id", required=True)
@@ -152,6 +209,8 @@ def main() -> None:
 
     if args.profile == "benign":
         run_benign(args.agent_id, args.profile)
+    elif args.profile in ("autonomous", "random"):
+        run_autonomous(args.agent_id, args.profile)
     elif args.profile == "silent":
         emit(
             "heartbeat",

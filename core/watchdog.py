@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import threading
 import time
 
 import docker
@@ -26,7 +25,6 @@ from core.store import (
     pop_spawn_requests,
     verify_chain,
 )
-from models.engine import get_engine, is_downloaded
 
 console = Console()
 app = typer.Typer(help="OrwellBlue enforcement watchdog")
@@ -55,21 +53,44 @@ class Watchdog:
         self.last_log_check: dict[str, float] = {}
         self.recent_actions: list[str] = []
         self.tick_count: int = 0
+        # Throttle O(n) scans so the loop stays responsive as the chain grows.
+        self._containment_cache: tuple[float, tuple[bool, str]] = (
+            0.0,
+            (True, "wrapper intact"),
+        )
+        self._chain_cache: tuple[float, tuple[bool, int, int | None]] = (
+            0.0,
+            (True, 0, None),
+        )
+        self._summary_cache: tuple[float, list[dict]] = (0.0, [])
+
+    def _containment(self) -> tuple[bool, str]:
+        now = time.time()
+        if now - self._containment_cache[0] >= 1.0:
+            self._containment_cache = (now, verify_wrapper_containment())
+        return self._containment_cache[1]
+
+    def _chain_status(self) -> tuple[bool, int, int | None]:
+        now = time.time()
+        if now - self._chain_cache[0] >= 1.0:
+            self._chain_cache = (now, verify_chain())
+        return self._chain_cache[1]
+
+    def _summary(self) -> list[dict]:
+        now = time.time()
+        if now - self._summary_cache[0] >= 0.5:
+            try:
+                summary = get_agents_summary()
+            except Exception as exc:  # noqa: BLE001
+                summary = []
+                self.log_action(f"summary error: {exc}")
+            self._summary_cache = (now, summary)
+        return self._summary_cache[1]
 
     def log_action(self, message: str) -> None:
         timestamp = time.strftime("%H:%M:%S")
         self.recent_actions.append(f"[{timestamp}] {message}")
         self.recent_actions = self.recent_actions[-20:]
-
-    def _warmup_models(self) -> None:
-        for model_key in ("qwen-1.5b", "qwen-math-1.5b"):
-            if not is_downloaded(model_key):
-                continue
-            try:
-                get_engine().warmup(model_key)
-                self.log_action(f"model warm {model_key}")
-            except Exception as exc:  # noqa: BLE001
-                self.log_action(f"model warmup failed {model_key}: {exc}")
 
     def _parse_telemetry_line(self, agent_id: str, line: str) -> Event | None:
         line = line.strip()
@@ -196,8 +217,8 @@ class Watchdog:
                 )
 
     def _build_dashboard(self) -> Layout:
-        valid, _reason = verify_wrapper_containment()
-        chain_valid, total, broken_id = verify_chain()
+        valid, _reason = self._containment()
+        chain_valid, total, broken_id = self._chain_status()
 
         # --- Header ---
         wrapper = (
@@ -232,7 +253,7 @@ class Watchdog:
         table.add_column("VIOLATIONS", justify="right", no_wrap=True)
 
         try:
-            summary = get_agents_summary()
+            summary = self._summary()
         except Exception as exc:  # noqa: BLE001
             summary = []
             self.log_action(f"summary error: {exc}")
@@ -280,7 +301,7 @@ class Watchdog:
     def tick(self) -> None:
         self.tick_count += 1
 
-        valid, reason = verify_wrapper_containment()
+        valid, reason = self._containment()
         if not valid:
             self.log_action(f"wrapper containment failed: {reason}")
             execute_self_destruct(reason)
@@ -292,7 +313,6 @@ class Watchdog:
 
     def run(self) -> None:
         self.log_action("watchdog started")
-        threading.Thread(target=self._warmup_models, daemon=True).start()
         with Live(
             self._build_dashboard(), refresh_per_second=2, console=console
         ) as live:

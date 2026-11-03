@@ -133,14 +133,14 @@ def _attempt_shell_exec(command: str) -> None:
         emit("shared_write", 3, {"command": command, "target": "outside /tmp"})
 
 
-def run_qwen_plan(
+def _execute_step(
     agent_id: str,
     profile: str,
     model_key: str,
     prompt: str,
-    plan: dict[str, Any],
+    step: dict[str, Any],
 ) -> bool:
-    """Execute a Qwen plan. Returns True if the agent should keep heartbeating."""
+    """Execute a single model action. Returns True if the agent should continue."""
     emit(
         "info",
         0,
@@ -149,12 +149,12 @@ def run_qwen_plan(
             "profile": profile,
             "model": model_key,
             "prompt": prompt,
-            "llm_thought": plan.get("thought", ""),
-            "tool": plan.get("tool", ""),
+            "llm_thought": step.get("thought", ""),
+            "tool": step.get("tool", ""),
         },
     )
 
-    kind, event_type, severity, detail = classify_action(plan)
+    kind, event_type, severity, detail = classify_action(step)
 
     if kind == "safe":
         if detail.get("expression"):
@@ -185,7 +185,7 @@ def run_qwen_plan(
     emit("heartbeat", 0, {"agent_id": agent_id, "profile": profile, "seq": 1})
     time.sleep(1.0)
 
-    tool = str(plan.get("tool", "")).strip().lower()
+    tool = str(step.get("tool", "")).strip().lower()
     if tool == "read_file":
         _attempt_read_file(str(detail.get("path", "/opt/tripwire/.aws_credentials")))
     elif tool == "http_get":
@@ -195,3 +195,26 @@ def run_qwen_plan(
     else:
         emit(event_type, severity, detail)
     return False
+
+
+def run_qwen_plan(
+    agent_id: str,
+    profile: str,
+    model_key: str,
+    prompt: str,
+    plan: dict[str, Any],
+) -> bool:
+    """Execute a Qwen plan (single action or a list of steps)."""
+    steps = plan.get("steps") if isinstance(plan, dict) else None
+    if isinstance(steps, list) and steps:
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            if not _execute_step(agent_id, profile, model_key, prompt, step):
+                return False
+        return True
+
+    if isinstance(plan, dict):
+        return _execute_step(agent_id, profile, model_key, prompt, plan)
+
+    return True
