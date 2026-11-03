@@ -19,10 +19,10 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { formatClockTime } from "@/lib/format";
 
 export default function OverviewPage() {
-  const { health, agents, events, chain, breach, mockMode, loading } = useDashboard();
+  const { health, agents, events, killCount, chain, breach, mockMode, loading } = useDashboard();
 
   const running = agents.filter((agent) => agent.status === "running").length;
-  const kills = events.filter((event) => event.type === "kill").length;
+  const kills = killCount;
   const latestEvents = events.filter((event) => event.type !== "heartbeat").slice(0, 6);
   const chainBlocks = chain?.total_events ?? 0;
   const chainValid = chain?.valid ?? null;

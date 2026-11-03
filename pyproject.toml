@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "orwellblue"
 version = "0.1.0"
@@ -12,6 +16,12 @@ dependencies = [
     "typer>=0.27.3",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[project.scripts]
+orwellblue = "core.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["api", "core", "models", "agents"]
 
 [dependency-groups]
 dev = [

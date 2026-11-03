@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Operator entrypoint. From the repo: ./scripts/orwellblue run
+# Or: uv run python -m core.cli run
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+exec uv run python -m core.cli "$@"

@@ -21,11 +21,11 @@ const Scene = dynamic(() => import("@/components/visuals/Scene"), {
 });
 
 export default function VisualsPage() {
-  const { agents, events, chain, breach } = useDashboard();
+  const { agents, events, killCount, chain, breach } = useDashboard();
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   const running = agents.filter((agent) => agent.status === "running").length;
-  const kills = events.filter((event) => event.type === "kill").length;
+  const kills = killCount;
   const chainValid = chain?.valid ?? null;
 
   const model = useMemo(

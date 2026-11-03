@@ -46,6 +46,7 @@ interface DashboardContextValue {
   health: HealthStatus | null;
   agents: AgentSummary[];
   events: SandboxEvent[];
+  killCount: number;
   chain: ChainVerification | null;
   breach: BreachState;
   queuedAgentIds: string[];
@@ -80,6 +81,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const [health, setHealth] = useState<HealthStatus | null>(null);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [events, setEvents] = useState<SandboxEvent[]>([]);
+  const [killCount, setKillCount] = useState(0);
   const [chain, setChain] = useState<ChainVerification | null>(null);
   const [queuedAgentIds, setQueuedAgentIds] = useState<string[]>([]);
   const [breach, setBreach] = useState<BreachState>({ active: false, reason: "" });
@@ -96,6 +98,12 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   const failures = useRef(0);
   const modeRef = useRef(mockMode);
   const countdownTimer = useRef<number | undefined>(undefined);
+  const seenKillIds = useRef(new Set<number>());
+
+  const clearKillCount = useCallback(() => {
+    seenKillIds.current.clear();
+    setKillCount(0);
+  }, []);
 
   useEffect(() => {
     modeRef.current = mockMode;
@@ -107,6 +115,10 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const unsubscribe = api.subscribeEvents((event) => {
       setEvents((current) => mergeEvent(current, event));
+      if (event.type === "kill" && !seenKillIds.current.has(event.id)) {
+        seenKillIds.current.add(event.id);
+        setKillCount(seenKillIds.current.size);
+      }
       if (event.type === "self_destruct") {
         setBreach({
           active: true,
@@ -210,6 +222,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     api.setUseMockMode(next);
     setMockMode(next);
     setEvents([]);
+    clearKillCount();
     setAgents([]);
     setHealth(null);
     setChain(null);
@@ -227,7 +240,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       setConnection("connecting");
       void refresh();
     }
-  }, [mockMode, clearError, refresh]);
+  }, [mockMode, clearError, clearKillCount, refresh]);
 
   const spawnAgent = useCallback(
     async (agentId: string, profile: AgentProfile) => {
@@ -316,6 +329,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     try {
       await api.resetSandboxEnv();
       setEvents([]);
+      clearKillCount();
       setAgents([]);
       setQueuedAgentIds([]);
       setBreach({ active: false, reason: "" });
@@ -325,7 +339,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
     } finally {
       setPending((current) => ({ ...current, reset: false }));
     }
-  }, [clearError, refresh]);
+  }, [clearError, clearKillCount, refresh]);
 
   const retryConnection = useCallback(() => {
     failures.current = 0;
@@ -341,6 +355,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       health,
       agents,
       events,
+      killCount,
       chain,
       breach,
       queuedAgentIds,
@@ -363,6 +378,7 @@ export function DashboardProvider({ children }: { children: ReactNode }) {
       health,
       agents,
       events,
+      killCount,
       chain,
       breach,
       queuedAgentIds,
