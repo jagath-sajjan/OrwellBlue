@@ -311,7 +311,7 @@ async function tickAgent(agent: AgentSummary, generation: number) {
   agentTicks.set(agent.agent_id, tickNumber);
   agent.last_heartbeat = Math.floor(Date.now() / 1000);
 
-  if (profile === "benign" || tickNumber <= 2) {
+  if (profile === "benign" || profile === "autonomous" || tickNumber <= 2) {
     await emit(agent.agent_id, "heartbeat", 0, { container_id: agent.container_id, uptime_seconds: tickNumber * 2 }, generation);
     return;
   }
@@ -323,6 +323,7 @@ async function tickAgent(agent: AgentSummary, generation: number) {
     egress: "egress_attempt",
     shared_write: "shared_write",
     silent: "heartbeat_lost",
+    autonomous: "heartbeat",
   };
   const violationType = violationTypes[profile];
   agent.violations += 1;

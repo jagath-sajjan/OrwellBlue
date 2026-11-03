@@ -11,7 +11,7 @@ export type EventType =
   | "kill"
   | "self_destruct";
 
-export type AgentProfile = "benign" | "ssrf" | "egress" | "privesc" | "tripwire" | "shared_write" | "silent";
+export type AgentProfile = "benign" | "ssrf" | "egress" | "privesc" | "tripwire" | "shared_write" | "silent" | "autonomous";
 
 export interface SandboxEvent {
   id: number;
@@ -32,10 +32,21 @@ export interface AgentSummary {
   container_id?: string | null;
 }
 
+export interface ChainBreakDetail {
+  agent_id: string;
+  type: string;
+  reason: "prev_hash_mismatch" | "hash_mismatch";
+  expected_prev_hash: string;
+  stored_prev_hash: string;
+  stored_hash: string;
+  expected_hash: string | null;
+}
+
 export interface ChainVerification {
   valid: boolean;
   total_events: number;
   broken_at_id: number | null;
+  break?: ChainBreakDetail | null;
 }
 
 export interface ForensicSnapshot {
