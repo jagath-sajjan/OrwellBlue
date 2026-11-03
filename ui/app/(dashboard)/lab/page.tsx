@@ -1,11 +1,12 @@
 "use client";
 
 import { FlaskConical, RotateCcw, ShieldCheck, Siren, Zap } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { useDashboard } from "@/components/providers/DashboardProvider";
 import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
 import { PageHeader } from "@/components/ui/PageHeader";
+import { randomAgentName } from "@/lib/names";
 import type { AgentProfile } from "@/lib/types";
 
 interface Scenario {
@@ -23,6 +24,12 @@ const SCENARIOS: Scenario[] = [
     description: "Runs heartbeat telemetry indefinitely.",
     expected: "Stays running",
     safe: true,
+  },
+  {
+    profile: "autonomous",
+    title: "Autonomous Agent",
+    description: "Makes its own random decisions over time.",
+    expected: "Unpredictable",
   },
   {
     profile: "ssrf",
@@ -65,11 +72,9 @@ const SCENARIOS: Scenario[] = [
 export default function LabPage() {
   const { mockMode, pending, spawnAgent, tamperWrapper, reset } = useDashboard();
   const [launching, setLaunching] = useState<string | null>(null);
-  const counter = useRef(0);
 
   async function launch(profile: AgentProfile) {
-    counter.current += 1;
-    const agentId = `${profile}-${counter.current}`;
+    const agentId = randomAgentName();
     setLaunching(agentId);
     try {
       await spawnAgent(agentId, profile);

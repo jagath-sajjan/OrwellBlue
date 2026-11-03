@@ -11,10 +11,12 @@ import { Input } from "@/components/ui/Input";
 import { PageHeader } from "@/components/ui/PageHeader";
 import { Select } from "@/components/ui/Select";
 import { formatClockTime } from "@/lib/format";
+import { randomAgentName } from "@/lib/names";
 import type { AgentProfile, AgentSummary } from "@/lib/types";
 
 const PROFILES: Array<{ value: AgentProfile; label: string }> = [
   { value: "benign", label: "Benign" },
+  { value: "autonomous", label: "Autonomous" },
   { value: "ssrf", label: "SSRF Metadata Probe" },
   { value: "egress", label: "Unauthorized Egress" },
   { value: "privesc", label: "Root Privesc Attempt" },
@@ -62,8 +64,7 @@ export default function FleetPage() {
 
   async function handleSpawn(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const id = agentId.trim();
-    if (!id) return;
+    const id = agentId.trim() || randomAgentName();
     await spawnAgent(id, profile);
     setAgentId("");
   }
@@ -90,7 +91,7 @@ export default function FleetPage() {
         <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-[1fr_1fr_auto]">
           <Input
             label="Agent ID"
-            placeholder="agent-delta"
+            placeholder="leave blank for a random name"
             value={agentId}
             onChange={(event) => setAgentId(event.target.value)}
             maxLength={48}

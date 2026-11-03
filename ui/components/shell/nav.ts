@@ -1,4 +1,4 @@
-import { Fingerprint, FlaskConical, LayoutGrid, Server, type LucideIcon } from "lucide-react";
+import { Box, Fingerprint, FlaskConical, LayoutGrid, Server, type LucideIcon } from "lucide-react";
 
 export interface NavItem {
   href: string;
@@ -11,4 +11,5 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/fleet", label: "Fleet", icon: Server },
   { href: "/lab", label: "Attack Lab", icon: FlaskConical },
   { href: "/ledger", label: "Ledger", icon: Fingerprint },
+  { href: "/visuals", label: "Visuals", icon: Box },
 ];

@@ -10,7 +10,7 @@ import { Panel } from "@/components/ui/Panel";
 import { Select } from "@/components/ui/Select";
 import { Switch } from "@/components/ui/Switch";
 import { eventTypeLabel, formatClockTime, shortHash } from "@/lib/format";
-import type { EventType, SandboxEvent } from "@/lib/types";
+import type { ChainBreakDetail, EventType, SandboxEvent } from "@/lib/types";
 
 const EVENT_TYPES: EventType[] = [
   "info",
@@ -33,6 +33,44 @@ function DetailWell({ event }: { event: SandboxEvent }) {
     <pre className="overflow-x-auto whitespace-pre-wrap border-2 border-ink bg-surface-2 p-4 font-mono text-[12px] leading-relaxed">
       {JSON.stringify(event.detail, null, 2)}
     </pre>
+  );
+}
+
+function BreakDetail({ detail }: { detail: ChainBreakDetail | null | undefined }) {
+  if (!detail) return null;
+  const hashMismatch = detail.reason === "hash_mismatch";
+  return (
+    <div className="border-2 border-ink bg-soft-red p-4 font-mono text-[12px]">
+      <div className="font-bold uppercase tracking-[0.08em]">
+        {hashMismatch ? "Content tampered" : "Link tampered"}
+      </div>
+      <div className="mt-1 text-ink-2">
+        {hashMismatch
+          ? "Stored hash does not match the recomputed SHA-256 of this block."
+          : "The previous-hash field does not match the prior block's hash."}
+      </div>
+      <div className="mt-3 grid gap-2">
+        {hashMismatch && detail.expected_hash ? (
+          <>
+            <div>
+              EXPECTED <code className="break-all">{detail.expected_hash}</code>
+            </div>
+            <div>
+              STORED <code className="break-all">{detail.stored_hash}</code>
+            </div>
+          </>
+        ) : (
+          <>
+            <div>
+              EXPECTED PREV <code className="break-all">{detail.expected_prev_hash}</code>
+            </div>
+            <div>
+              STORED PREV <code className="break-all">{detail.stored_prev_hash}</code>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -99,8 +137,11 @@ export default function LedgerPage() {
         </div>
 
         {chain && chainValid === false ? (
-          <div className="border-2 border-ink bg-soft-red p-3 font-mono text-[13px]" role="alert">
-            Chain broken at block #{chain.broken_at_id ?? "unknown"}.
+          <div className="flex flex-col gap-3" role="alert">
+            <div className="border-2 border-ink bg-soft-red p-3 font-mono text-[13px] font-bold uppercase tracking-[0.08em]">
+              Chain broken at block #{chain.broken_at_id ?? "unknown"}
+            </div>
+            <BreakDetail detail={chain.break} />
           </div>
         ) : null}
       </div>
@@ -164,6 +205,8 @@ export default function LedgerPage() {
                 key={`${event.id}-${event.hash}`}
                 event={event}
                 expanded={expandedId === event.id}
+                broken={chain?.broken_at_id === event.id}
+                breakDetail={chain?.broken_at_id === event.id ? chain.break : null}
                 onToggle={() => toggleExpanded(event.id)}
               />
             ))}
@@ -173,23 +216,34 @@ export default function LedgerPage() {
 
       {/* Mobile stacked cards */}
       <div className="mt-8 flex flex-col gap-3 md:hidden">
-        {visible.map((event) => (
-          <article key={`${event.id}-${event.hash}`} className="border-2 border-ink bg-bg shadow-sm">
-            <button
-              type="button"
-              onClick={() => toggleExpanded(event.id)}
-              className="flex w-full items-center justify-between gap-2 p-4 text-left"
+        {visible.map((event) => {
+          const broken = chain?.broken_at_id === event.id;
+          return (
+            <article
+              key={`${event.id}-${event.hash}`}
+              className={`border-2 border-ink shadow-sm ${broken ? "bg-soft-red" : "bg-bg"}`}
             >
-              <div className="min-w-0">
-                <div className="font-mono text-[11px] text-ink-2 tabular-nums">{formatClockTime(event.ts)}</div>
-                <div className="truncate font-mono text-[13px] font-bold uppercase tracking-[0.04em]">{event.agent_id}</div>
-                <div className="font-mono text-[11px] uppercase tracking-[0.08em]">{eventTypeLabel(event.type)}</div>
-              </div>
-              <SeverityChip severity={event.severity} />
-            </button>
-            {expandedId === event.id ? <div className="border-t-2 border-ink p-4"><DetailWell event={event} /></div> : null}
-          </article>
-        ))}
+              <button
+                type="button"
+                onClick={() => toggleExpanded(event.id)}
+                className="flex w-full items-center justify-between gap-2 p-4 text-left"
+              >
+                <div className="min-w-0">
+                  <div className="font-mono text-[11px] text-ink-2 tabular-nums">{formatClockTime(event.ts)}</div>
+                  <div className="truncate font-mono text-[13px] font-bold uppercase tracking-[0.04em]">{event.agent_id}</div>
+                  <div className="font-mono text-[11px] uppercase tracking-[0.08em]">{eventTypeLabel(event.type)}</div>
+                </div>
+                <SeverityChip severity={event.severity} />
+              </button>
+              {expandedId === event.id ? (
+                <div className="flex flex-col gap-3 border-t-2 border-ink p-4">
+                  {broken ? <BreakDetail detail={chain?.break} /> : null}
+                  <DetailWell event={event} />
+                </div>
+              ) : null}
+            </article>
+          );
+        })}
       </div>
 
       {visible.length === 0 ? (
@@ -212,16 +266,22 @@ export default function LedgerPage() {
 function RowContent({
   event,
   expanded,
+  broken,
+  breakDetail,
   onToggle,
 }: {
   event: SandboxEvent;
   expanded: boolean;
+  broken: boolean;
+  breakDetail: ChainBreakDetail | null | undefined;
   onToggle: () => void;
 }) {
   return (
     <>
       <tr
-        className={`cursor-pointer border-b-2 border-ink transition-colors hover:bg-surface-2 ${
+        className={`cursor-pointer border-b-2 border-ink transition-colors ${
+          broken ? "bg-soft-red" : "hover:bg-surface-2"
+        } ${
           event.severity === 1 ? "row-flash-warn" : event.severity >= 2 ? "row-flash-critical" : ""
         }`}
         onClick={onToggle}
@@ -246,7 +306,10 @@ function RowContent({
       {expanded ? (
         <tr>
           <td colSpan={6} className="border-b-2 border-ink bg-bg p-4">
-            <DetailWell event={event} />
+            <div className="flex flex-col gap-3">
+              {broken ? <BreakDetail detail={breakDetail} /> : null}
+              <DetailWell event={event} />
+            </div>
           </td>
         </tr>
       ) : null}
